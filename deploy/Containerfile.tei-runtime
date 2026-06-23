@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1
+#
+# Containerfile.tei-runtime — unified TEI runtime (embedding + reranker)
+#
+# One image handles both embedding and reranker workloads.
+# The distinction is made at runtime via the --model-id flag (passed by Helm),
+# which points to the model directory populated by the init container.
+#
+# Embedding:  --model-id /model --pooling cls
+# Reranker:   --model-id /model --rerank
+#
+# Requires: model populated at /model before start (via tei-model-init).
+# No model included — runtime image stays small (~938 MB).
+#
+# Build:
+#   docker build -f deploy/Containerfile.tei-runtime \
+#     --build-arg REGISTRY=ghcr.io/layer87-labs \
+#     --build-arg BASE_TAG=latest \
+#     -t ghcr.io/layer87-labs/tei-runtime:cpu-1.9.3 .
+
+ARG REGISTRY=ghcr.io/layer87-labs
+ARG BASE_TAG=latest
+
+FROM ${REGISTRY}/tei-base:${BASE_TAG}
+
+# Disable outbound HuggingFace Hub calls — model must be present at /model.
+ENV HF_HUB_OFFLINE=1
+ENV HUGGINGFACE_OFFLINE=1
+
+# Mount point for model (populated by init container).
+VOLUME ["/model"]
+
+EXPOSE 8080
+
+LABEL org.opencontainers.image.source="https://github.com/layer87-labs/inference-stack"
+LABEL org.opencontainers.image.description="TEI runtime (CPU) — embedding + reranker, model via /model volume"

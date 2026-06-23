@@ -1,0 +1,56 @@
+# syntax=docker/dockerfile:1
+#
+# Containerfile.whisper — Whisper ASR HTTP server, hardened
+#
+# Exposes an OpenAI-compatible /v1/audio/transcriptions endpoint.
+# Uses faster-whisper (CTranslate2 backend) for CPU-efficient inference.
+#
+# Model is baked into the image at build time (no init container needed —
+# Whisper large-v3-turbo is ~800 MB, small enough to keep in a single image).
+#
+# Hardened:
+#   1. execstack cleared on libctranslate2.so (fixes mprotect PROT_EXEC crash)
+#   2. Model baked in — no cold-start download
+#   3. Non-root (uid 1000)
+#   4. HF_HUB_OFFLINE=1 — no outbound HuggingFace calls at runtime
+
+ARG WHISPER_VERSION=v1.9.1
+ARG WHISPER_MODEL=large-v3-turbo
+
+# ── Stage 1: patchelf binary ──────────────────────────────────────────────────
+FROM debian:bookworm-slim AS tools
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends patchelf && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── Stage 2: Whisper runtime ──────────────────────────────────────────────────
+FROM docker.io/onerahmet/openai-whisper-asr-webservice:${WHISPER_VERSION}
+
+ARG WHISPER_MODEL
+
+USER root
+
+ENV ASR_MODEL=${WHISPER_MODEL}
+ENV ASR_ENGINE=faster_whisper
+ENV HF_HUB_OFFLINE=1
+ENV HUGGINGFACE_OFFLINE=1
+ENV UVICORN_PORT=8080
+
+# Clear executable-stack ELF flag on ctranslate2 shared library.
+# Required for securityContext.allowPrivilegeEscalation=false.
+COPY --from=tools /usr/bin/patchelf /usr/bin/patchelf
+RUN find /app/.venv -name 'libctranslate2*.so*' -exec /usr/bin/patchelf --clear-execstack {} \; && \
+    rm -f /usr/bin/patchelf
+
+# Download model at build time.
+RUN python -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL}', device='cpu', compute_type='int8')" || true
+
+# Non-root user + ownership fix.
+RUN groupadd -g 1000 whisper && \
+    useradd -u 1000 -g whisper -m -s /bin/bash whisper && \
+    chown -R whisper:whisper /app /root/.cache 2>/dev/null || true
+
+USER 1000
+
+LABEL org.opencontainers.image.source="https://github.com/layer87-labs/inference-stack"
+LABEL org.opencontainers.image.description="Whisper ASR HTTP server (CPU) — model baked in, hardened"

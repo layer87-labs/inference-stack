@@ -1,0 +1,146 @@
+{{- if .Values.reranker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "inference-stack.fullname" . }}-reranker
+  labels:
+    {{- include "inference-stack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reranker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "inference-stack.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: reranker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "inference-stack.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: reranker
+    spec:
+      securityContext:
+        fsGroup: 1000
+      {{- include "inference-stack.imagePullSecrets" (dict "local" .Values.reranker.imagePullSecrets "global" .Values.global.imagePullSecrets) | nindent 6 }}
+      {{- with (coalesce .Values.reranker.nodeSelector .Values.global.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (coalesce .Values.reranker.tolerations .Values.global.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+      - name: model-init
+        image: {{ include "inference-stack.image" (dict "registry" .Values.global.imageRegistry "repo" .Values.reranker.modelInit.image.repository "tag" .Values.reranker.modelInit.image.tag "appVersion" .Chart.AppVersion) }}
+        imagePullPolicy: {{ .Values.reranker.modelInit.image.pullPolicy }}
+        command: ["sh", "-c", "rsync -rlgoDv --ignore-existing /model-baked/ /model/ && echo 'reranker-init: done'"]
+        volumeMounts:
+        - name: model
+          mountPath: /model
+      containers:
+      - name: reranker
+        image: {{ include "inference-stack.image" (dict "registry" .Values.global.imageRegistry "repo" .Values.reranker.image.repository "tag" .Values.reranker.image.tag "appVersion" .Chart.AppVersion) }}
+        imagePullPolicy: {{ .Values.reranker.image.pullPolicy }}
+        env:
+        - name: HF_HUB_OFFLINE
+          value: "1"
+        - name: HUGGINGFACE_OFFLINE
+          value: "1"
+        {{- if .Values.reranker.maxLength }}
+        - name: MAX_LENGTH
+          value: {{ .Values.reranker.maxLength | quote }}
+        {{- end }}
+        {{- if .Values.reranker.useFp16 }}
+        - name: USE_FP16
+          value: {{ .Values.reranker.useFp16 | quote }}
+        {{- end }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.reranker.service.port }}
+          protocol: TCP
+        startupProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: {{ .Values.reranker.startupProbe.periodSeconds }}
+          timeoutSeconds: 10
+          failureThreshold: {{ .Values.reranker.startupProbe.failureThreshold }}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        resources:
+          {{- toYaml .Values.reranker.resources | nindent 10 }}
+        securityContext:
+          {{- toYaml .Values.reranker.securityContext | nindent 10 }}
+        volumeMounts:
+        - name: model
+          mountPath: /model
+          readOnly: true
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: model
+        {{- if .Values.reranker.persistence.enabled }}
+        persistentVolumeClaim:
+          claimName: {{ include "inference-stack.fullname" . }}-reranker-model
+        {{- else }}
+        emptyDir:
+          sizeLimit: 4Gi
+        {{- end }}
+      - name: data
+        emptyDir:
+          sizeLimit: 1Gi
+{{- if .Values.reranker.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "inference-stack.fullname" . }}-reranker-model
+  labels:
+    {{- include "inference-stack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reranker
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ .Values.reranker.persistence.size }}
+  {{- $sc := coalesce .Values.reranker.persistence.storageClass .Values.global.storageClass }}
+  {{- if $sc }}
+  storageClassName: {{ $sc | quote }}
+  {{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "inference-stack.fullname" . }}-reranker
+  labels:
+    {{- include "inference-stack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reranker
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: {{ .Values.reranker.service.port }}
+    targetPort: http
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: {{ include "inference-stack.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: reranker
+{{- end }}

@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1
+#
+# Containerfile.tei-model-init — TEI model init container
+#
+# Bakes a single model into the image at build time.
+# At runtime, copies the model to /model (shared emptyDir or PVC) and exits.
+# Designed as a Kubernetes init container.
+#
+# Build variants:
+#   # Embedding
+#   docker build -f deploy/Containerfile.tei-model-init \
+#     --build-arg MODEL_ID=BAAI/bge-m3 \
+#     -t ghcr.io/layer87-labs/tei-model-init:bge-m3 .
+#
+#   # Reranker
+#   docker build -f deploy/Containerfile.tei-model-init \
+#     --build-arg MODEL_ID=BAAI/bge-reranker-v2-m3 \
+#     -t ghcr.io/layer87-labs/tei-model-init:bge-reranker-v2-m3 .
+#
+# Idempotency: rsync --ignore-existing skips files already on the volume.
+# Safe to run on every pod start — no unnecessary I/O if model is present.
+
+ARG MODEL_ID=BAAI/bge-m3
+ARG MODEL_DATE=2026.06
+
+# ── Stage 1: download model ───────────────────────────────────────────────────
+FROM python:3.12-slim AS downloader
+
+ARG MODEL_ID
+
+RUN pip install --quiet --no-cache-dir "huggingface_hub[cli]>=0.24"
+
+RUN hf download "${MODEL_ID}" \
+      --exclude "*.ot" \
+      --exclude "flax_model*" \
+      --exclude "tf_model*" \
+      --local-dir /model-cache
+
+# ── Stage 2: minimal init container ──────────────────────────────────────────
+FROM debian:bookworm-slim
+
+ARG MODEL_ID
+ARG MODEL_DATE
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends rsync && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -g 1000 tei && \
+    useradd -u 1000 -g tei -m -s /bin/bash tei
+
+COPY --from=downloader --chown=tei:tei /model-cache /model-baked
+
+USER 1000
+
+# Idempotent copy: only transfers files not already present on /model.
+# Use -rlgoDv instead of -a to avoid -t (timestamps) which fails on CSI volumes.
+ENTRYPOINT ["sh", "-c", "rsync -rlgoDv --ignore-existing /model-baked/ /model/ && echo 'model-init: done'"]
+
+LABEL org.opencontainers.image.source="https://github.com/layer87-labs/inference-stack"
+LABEL org.opencontainers.image.description="TEI model init container — baked model, idempotent copy to /model"

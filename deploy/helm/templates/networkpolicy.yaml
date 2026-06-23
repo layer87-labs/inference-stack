@@ -1,0 +1,45 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- if .Values.router.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "inference-stack.fullname" . }}-router
+  labels:
+    {{- include "inference-stack.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "inference-stack.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: router
+  policyTypes: [Ingress, Egress]
+  ingress:
+  {{- range .Values.networkPolicy.ingressNamespaces }}
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ . }}
+    ports:
+    - port: 8080
+  {{- end }}
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+    ports:
+    - port: 9090
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  - to:
+    - podSelector: {}
+{{- end }}
+{{- end }}

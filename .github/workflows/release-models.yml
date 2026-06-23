@@ -1,0 +1,118 @@
+name: Release Models
+
+# Trigger: manually via workflow_dispatch, or on changes to model Containerfiles.
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "Which model images to build (comma-separated: embedding,reranker,whisper or 'all')"
+        required: true
+        default: "all"
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - "deploy/Containerfile.tei-model-init"
+      - "deploy/Containerfile.reranker-model-init"
+      - "deploy/Containerfile.whisper"
+      - "deploy/reranker/server.py"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io/layer87-labs
+
+jobs:
+  embedding-model:
+    if: >
+      github.event_name == 'push' ||
+      contains(github.event.inputs.targets, 'embedding') ||
+      github.event.inputs.targets == 'all'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set model tag
+        run: echo "MODEL_TAG=bge-m3-$(date +%Y.%m)" >> $GITHUB_ENV
+
+      - name: Build and push TEI model init (embedding)
+        run: |
+          docker build \
+            -f deploy/Containerfile.tei-model-init \
+            --build-arg MODEL_ID=BAAI/bge-m3 \
+            -t ${{ env.REGISTRY }}/tei-model-init:${{ env.MODEL_TAG }} \
+            -t ${{ env.REGISTRY }}/tei-model-init:latest \
+            .
+          docker push ${{ env.REGISTRY }}/tei-model-init:${{ env.MODEL_TAG }}
+          docker push ${{ env.REGISTRY }}/tei-model-init:latest
+
+  reranker-model:
+    if: >
+      github.event_name == 'push' ||
+      contains(github.event.inputs.targets, 'reranker') ||
+      github.event.inputs.targets == 'all'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set model tag
+        run: echo "MODEL_TAG=bge-reranker-v2-m3-$(date +%Y.%m)" >> $GITHUB_ENV
+
+      - name: Build and push reranker model init
+        run: |
+          docker build \
+            -f deploy/Containerfile.reranker-model-init \
+            --build-arg MODEL_ID=BAAI/bge-reranker-v2-m3 \
+            -t ${{ env.REGISTRY }}/reranker-model-init:${{ env.MODEL_TAG }} \
+            -t ${{ env.REGISTRY }}/reranker-model-init:latest \
+            .
+          docker push ${{ env.REGISTRY }}/reranker-model-init:${{ env.MODEL_TAG }}
+          docker push ${{ env.REGISTRY }}/reranker-model-init:latest
+
+  whisper-model:
+    if: >
+      github.event_name == 'push' ||
+      contains(github.event.inputs.targets, 'whisper') ||
+      github.event.inputs.targets == 'all'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract whisper model from Containerfile
+        run: |
+          MODEL=$(grep '^ARG WHISPER_MODEL=' deploy/Containerfile.whisper | sed 's/ARG WHISPER_MODEL=//')
+          echo "WHISPER_MODEL=${MODEL}" >> $GITHUB_ENV
+          echo "MODEL_TAG=${MODEL}-$(date +%Y.%m)" >> $GITHUB_ENV
+
+      - name: Build and push whisper
+        run: |
+          docker build \
+            -f deploy/Containerfile.whisper \
+            -t ${{ env.REGISTRY }}/whisper:${{ env.MODEL_TAG }} \
+            -t ${{ env.REGISTRY }}/whisper:latest \
+            .
+          docker push ${{ env.REGISTRY }}/whisper:${{ env.MODEL_TAG }}
+          docker push ${{ env.REGISTRY }}/whisper:latest

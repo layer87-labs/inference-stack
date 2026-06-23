@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1
+#
+# Containerfile.tei-base — Hardened TEI base image
+#
+# Responsibilities:
+#   1. Clear executable-stack ELF flag on ONNX Runtime .so files
+#   2. Create non-root user (uid 1000)
+#   3. Prepare /data and /model mount points
+#
+# Does NOT include a model. Does NOT pin a TEI version — downstream images do.
+#
+# Used as FROM base by:
+#   Containerfile.tei-runtime
+
+ARG TEI_VERSION=cpu-1.9.3
+
+# ── Stage 1: patchelf binary ──────────────────────────────────────────────────
+FROM debian:bookworm-slim AS tools
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends patchelf && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── Stage 2: hardened TEI runtime ────────────────────────────────────────────
+FROM ghcr.io/huggingface/text-embeddings-inference:${TEI_VERSION}
+
+USER root
+
+# Clear executable-stack ELF flag on ONNX Runtime shared libraries.
+# Required for securityContext.allowPrivilegeEscalation=false on strict kernels.
+COPY --from=tools /usr/bin/patchelf /usr/bin/patchelf
+RUN find / -name 'libonnxruntime*.so*' -exec /usr/bin/patchelf --clear-execstack {} \; 2>/dev/null || true && \
+    find / -name 'libort*.so*'         -exec /usr/bin/patchelf --clear-execstack {} \; 2>/dev/null || true && \
+    rm -f /usr/bin/patchelf
+
+# Non-root user + mount points.
+RUN groupadd -g 1000 tei && \
+    useradd -u 1000 -g tei -m -s /bin/bash tei && \
+    mkdir -p /data /model /tmp/text-embeddings-inference-server && \
+    chown -R tei:tei /data /model /tmp/text-embeddings-inference-server
+
+USER 1000
+
+LABEL org.opencontainers.image.source="https://github.com/layer87-labs/inference-stack"
+LABEL org.opencontainers.image.description="TEI CPU hardened base — patchelf-cleared, non-root"

@@ -1,0 +1,48 @@
+# syntax=docker/dockerfile:1
+#
+# Containerfile.reranker-model-init — BGE-reranker-v2-m3 model init container
+#
+# Bakes the model at build time, copies to /model volume at pod start.
+#
+# Build:
+#   docker build -f deploy/Containerfile.reranker-model-init \
+#     -t ghcr.io/layer87-labs/reranker-model-init:latest .
+
+ARG MODEL_ID=BAAI/bge-reranker-v2-m3
+
+# ── Stage 1: Download model ───────────────────────────────────────────────────
+
+FROM python:3.12-slim AS downloader
+
+ARG MODEL_ID
+
+RUN pip install --quiet --no-cache-dir "huggingface_hub[cli]>=0.24"
+
+RUN hf download "${MODEL_ID}" \
+      --exclude "*.ot" \
+      --exclude "flax_model*" \
+      --exclude "tf_model*" \
+      --local-dir /model-cache
+
+# ── Stage 2: Minimal init container ──────────────────────────────────────────
+
+FROM debian:bookworm-slim
+
+ARG MODEL_ID
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends rsync && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -g 1000 app && \
+    useradd -u 1000 -g app -m -s /bin/bash app
+
+COPY --from=downloader --chown=app:app /model-cache /model-baked
+
+USER 1000
+
+# Idempotent copy: only transfers files not already present on /model.
+# Use -rlgoDv instead of -a to avoid -t (timestamps) which fails on CSI volumes.
+ENTRYPOINT ["sh", "-c", "rsync -rlgoDv --ignore-existing /model-baked/ /model/ && echo 'reranker-init: done'"]
+
+LABEL org.opencontainers.image.source="https://github.com/layer87-labs/inference-stack"
+LABEL org.opencontainers.image.description="Reranker model init — baked BGE-reranker-v2-m3, idempotent copy to /model"

@@ -1,0 +1,44 @@
+Inference Stack {{ .Chart.AppVersion }} deployed.
+
+Enabled backends:
+{{- if .Values.embedding.enabled }}
+  ✓ Embedding  (BAAI/bge-m3)
+    Runtime:    {{ .Values.embedding.image.repository }}:{{ .Values.embedding.image.tag | default .Chart.AppVersion }}
+    Model init: {{ .Values.embedding.modelInit.image.repository }}:{{ .Values.embedding.modelInit.image.tag | default .Chart.AppVersion }}
+    Service:    {{ include "inference-stack.fullname" . }}-embedding:{{ .Values.embedding.service.port }}
+{{- else }}
+  ✗ Embedding  (disabled)
+{{- end }}
+{{- if .Values.reranker.enabled }}
+  ✓ Reranker   (BAAI/bge-reranker-v2-m3)
+    Runtime:    {{ .Values.reranker.image.repository }}:{{ .Values.reranker.image.tag | default .Chart.AppVersion }}
+    Model init: {{ .Values.reranker.modelInit.image.repository }}:{{ .Values.reranker.modelInit.image.tag | default .Chart.AppVersion }}
+    Service:    {{ include "inference-stack.fullname" . }}-reranker:{{ .Values.reranker.service.port }}
+{{- else }}
+  ✗ Reranker   (disabled)
+{{- end }}
+{{- if .Values.whisper.enabled }}
+  ✓ Whisper    ({{ .Values.whisper.modelName }})
+    Image:   {{ .Values.whisper.image.repository }}:{{ .Values.whisper.image.tag }}
+    Service: {{ include "inference-stack.fullname" . }}-whisper:{{ .Values.whisper.service.port }}
+{{- else }}
+  ✗ Whisper    (disabled)
+{{- end }}
+
+{{- if .Values.router.enabled }}
+
+Router (unified endpoint):
+  Service: {{ include "inference-stack.fullname" . }}-router:{{ .Values.router.service.port }}
+
+  Routes:
+    POST /v1/embeddings           → embedding
+    POST /v1/rerank               → reranker
+    POST /v1/audio/transcriptions → whisper
+    GET  /v1/models               → merged model list
+    GET  /healthz                 → health status
+    GET  /readyz                  → readiness
+{{- end }}
+
+Model load: init container copies model from baked image to PVC/emptyDir on first start.
+If PVC is used, subsequent starts skip the copy (idempotent rsync).
+Monitor startup: kubectl logs -f -l app.kubernetes.io/component=embedding -n {{ .Release.Namespace }}

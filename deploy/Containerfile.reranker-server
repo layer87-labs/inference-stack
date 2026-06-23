@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1
+#
+# Containerfile.reranker-server — BGE-reranker-v2-m3 HTTP server
+#
+# Lightweight FlagEmbedding HTTP server, reads model from /model volume.
+#
+# Build:
+#   docker build -f deploy/Containerfile.reranker-server \
+#     -t ghcr.io/layer87-labs/reranker-server:latest .
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      g++ \
+      libopenblas0 \
+      libopenblas-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    "FlagEmbedding>=1.3.0,<1.4.0" \
+    "transformers>=4.40.0,<5.0.0" \
+    "fastapi>=0.110.0" \
+    "uvicorn[standard]>=0.27.0" \
+    "pydantic>=2.0.0"
+
+RUN groupadd -g 1000 app && \
+    useradd -u 1000 -g app -m -s /bin/bash app && \
+    mkdir -p /model /data && \
+    chown -R app:app /model /data /app
+
+USER 1000
+
+COPY --chown=app:app deploy/reranker/server.py /app/server.py
+
+EXPOSE 80
+
+ENV HF_HUB_OFFLINE=1
+ENV HUGGINGFACE_OFFLINE=1
+ENV MODEL_ID=/model
+ENV PORT=80
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=120s --retries=8 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:80/health')" || exit 1
+
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "80", "--workers", "1"]
+
+LABEL org.opencontainers.image.source="https://github.com/layer87-labs/inference-stack"
+LABEL org.opencontainers.image.description="BGE-reranker-v2-m3 HTTP server — OpenAI-compatible /v1/rerank"

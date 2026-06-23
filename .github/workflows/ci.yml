@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # ── relctl: PR metadata + version preview ─────────────────────────────────
+  build-info:
+    uses: layer87-labs/relctl-action/.github/workflows/generate-build-infos.yml@v1
+    secrets:
+      token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Go: lint, test, build ─────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+
+      - name: Test
+        run: go test -race -v ./...
+
+      - name: Build
+        run: make build

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:base"],
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 2,
+
+  "packageRules": [
+    {
+      "description": "Group all inference-stack dependency bumps",
+      "matchPackagePatterns": ["*"],
+      "groupName": "inference-stack deps",
+      "groupSlug": "inference-stack-deps"
+    }
+  ],
+
+  "customManagers": [
+    {
+      "description": "TEI upstream version in Containerfile.tei-base",
+      "customType": "regex",
+      "fileMatch": ["^deploy/Containerfile\\.tei-base$"],
+      "matchStrings": [
+        "ARG TEI_VERSION=(?<currentValue>cpu-[\\d.]+)"
+      ],
+      "depNameTemplate": "ghcr.io/huggingface/text-embeddings-inference",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "loose",
+      "autoReplaceStringTemplate": "ARG TEI_VERSION={{{newValue}}}"
+    },
+    {
+      "description": "Whisper upstream version in Containerfile.whisper",
+      "customType": "regex",
+      "fileMatch": ["^deploy/Containerfile\\.whisper$"],
+      "matchStrings": [
+        "ARG WHISPER_VERSION=(?<currentValue>v[\\d.]+)"
+      ],
+      "depNameTemplate": "docker.io/onerahmet/openai-whisper-asr-webservice",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "loose",
+      "autoReplaceStringTemplate": "ARG WHISPER_VERSION={{{newValue}}}"
+    }
+  ]
+}

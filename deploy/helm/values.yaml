@@ -1,0 +1,244 @@
+# Inference Stack — Helm values
+#
+# All model backends are disabled by default.
+# Enable selectively per deployment:
+#
+#   embedding.enabled: true
+#   reranker.enabled:  true
+#   whisper.enabled:   true
+#   router.enabled:    true
+#
+# Architecture:
+#   tei-runtime        — TEI image for embedding (BGE-M3)
+#   tei-model-init     — init container that copies baked model to a shared volume
+#   reranker-server    — FlagEmbedding HTTP server for reranking (BGE-reranker-v2-m3)
+#   reranker-model-init — init container that copies baked model to a shared volume
+#   whisper            — ASR server with model baked in
+#   router             — unified OpenAI-compatible proxy
+
+# ── Global ────────────────────────────────────────────────────────────────────
+global:
+  imageRegistry: "ghcr.io/layer87-labs"
+  storageClass: ""
+  imagePullSecrets: []
+  nodeSelector: {}
+  tolerations: []
+
+# ── Inference Router ──────────────────────────────────────────────────────────
+router:
+  enabled: true
+
+  image:
+    repository: inference-router
+    tag: "" # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+
+  replicas: 1
+
+  service:
+    port: 8080
+
+  metricsPort: 9090
+
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+  healthCheckInterval: "15s"
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+
+  imagePullSecrets: []
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ── Embedding — BAAI/bge-m3 ───────────────────────────────────────────────────
+embedding:
+  enabled: false
+
+  # tei-runtime image — TEI embedding server (BGE-M3)
+  image:
+    repository: tei-runtime
+    tag: "" # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+
+  # Model init container — copies baked model to shared /model volume
+  # Model images are versioned independently: <model>-<YYYY.MM>
+  modelInit:
+    image:
+      repository: tei-model-init
+      tag: "bge-m3-2026.06" # model images have their own version scheme
+      pullPolicy: IfNotPresent
+
+  # TEI args
+  modelID: "/model" # model is loaded from volume, not HuggingFace
+  dtype: "float32"
+  # Pooling strategy for BGE-M3 embeddings
+  pooling: "cls"
+  # CPU tuning: default --max-batch-tokens is 16384 (GPU-tuned, OOMs on CPU).
+  # Use 4096 for fp32 on CPU to keep RSS at ~3-6Gi.
+  #
+  # Resource requirements by --max-batch-tokens (BGE-M3, fp32, CPU):
+  #   4096  -> 3-6Gi  RSS  (recommended for CPU)
+  #   8192  -> 6-10Gi RSS  (may OOM on 8Gi limit)
+  #   16384 -> 10-16Gi RSS (GPU-only, OOMs on typical CPU nodes)
+  extraArgs:
+    - "--max-batch-tokens"
+    - "4096"
+
+  service:
+    port: 80
+
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "3Gi"
+    limits:
+      cpu: "2"
+      memory: "6Gi"
+
+  # Model volume — PVC keeps model across pod restarts (avoids re-copy)
+  # Set enabled: false to use emptyDir (model copied from init container every start)
+  persistence:
+    enabled: true
+    size: "5Gi"
+    storageClass: "" # falls back to global.storageClass
+
+  startupProbe:
+    periodSeconds: 15
+    failureThreshold: 40 # up to 10 min for model load
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop: [ALL]
+
+  imagePullSecrets: []
+  nodeSelector: {}
+  tolerations: []
+
+# ── Reranker — BAAI/bge-reranker-v2-m3 ───────────────────────────────────────
+# Uses FlagEmbedding (native CPU) — model via init container + PVC.
+# TEI does not support reranking; this is a dedicated FlagEmbedding server.
+reranker:
+  enabled: false
+
+  # reranker-server image — lightweight FlagEmbedding HTTP server
+  image:
+    repository: reranker-server
+    tag: "" # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+
+  # Model init container — copies baked model to shared /model volume
+  # Model images are versioned independently: <model>-<YYYY.MM>
+  modelInit:
+    image:
+      repository: reranker-model-init
+      tag: "bge-reranker-v2-m3-2026.06" # model images have their own version scheme
+      pullPolicy: IfNotPresent
+
+  # Model config
+  maxLength: "512" # max sequence length
+  useFp16: "true" # fp16 for speed (negligible quality impact)
+
+  service:
+    port: 80
+
+  # CPU tuning: FlagEmbedding is lightweight on CPU.
+  # BGE-reranker-v2-m3 (~0.6B params) fits comfortably in 4Gi.
+  #
+  # Resource requirements (BGE-reranker-v2-m3, fp16, CPU):
+  #   maxLength=512  → 2-4Gi  RSS  (recommended)
+  #   maxLength=1024 → 4-6Gi  RSS
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+
+  # Model volume — PVC keeps model across pod restarts (avoids re-copy)
+  persistence:
+    enabled: true
+    size: "4Gi"
+    storageClass: "" # falls back to global.storageClass
+
+  startupProbe:
+    periodSeconds: 15
+    failureThreshold: 40 # up to 10 min for model load
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop: [ALL]
+
+  imagePullSecrets: []
+  nodeSelector: {}
+  tolerations: []
+
+# ── Whisper — OpenAI-compatible ASR ───────────────────────────────────────────
+whisper:
+  enabled: false
+
+  # Whisper image has model baked in — versioned as <model>-<YYYY.MM>
+  image:
+    repository: whisper
+    tag: "large-v3-turbo-2026.06"
+    pullPolicy: IfNotPresent
+
+  modelName: "large-v3-turbo"
+
+  service:
+    port: 8080
+
+  resources:
+    requests:
+      cpu: "1000m"
+      memory: "4Gi"
+    limits:
+      cpu: "8000m"
+      memory: "8Gi"
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop: [ALL]
+
+  imagePullSecrets: []
+  nodeSelector: {}
+  tolerations: []
+
+# ── ServiceMonitor (Prometheus Operator) ──────────────────────────────────────
+serviceMonitor:
+  enabled: false
+  namespace: ""
+  labels:
+    release: kube-prometheus-stack
+  interval: "30s"
+  scrapeTimeout: "10s"
+
+# ── Network Policy ────────────────────────────────────────────────────────────
+networkPolicy:
+  enabled: false
+  ingressNamespaces: []

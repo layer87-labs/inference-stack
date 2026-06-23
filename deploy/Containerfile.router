@@ -1,0 +1,17 @@
+FROM cgr.dev/chainguard/static:latest
+
+WORKDIR /app
+
+COPY /build/bin/inference-router /app/inference-router
+
+USER 65532:65532
+
+# Main API port
+EXPOSE 8080
+# Prometheus metrics port
+EXPOSE 9090
+
+LABEL org.opencontainers.image.source="https://github.com/layer87-labs/inference-stack"
+LABEL org.opencontainers.image.description="Inference Router — unified proxy for TEI, reranker and Whisper"
+
+ENTRYPOINT ["/app/inference-router"]

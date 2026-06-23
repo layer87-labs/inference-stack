@@ -1,0 +1,10 @@
+/build/
+dist/
+*.exe
+*.test
+*.out
+vendor/
+.env
+.env.*
+deploy/helm/charts/
+/mockbackend
