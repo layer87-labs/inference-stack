@@ -16,7 +16,7 @@ env:
 jobs:
   # ── Step 1: relctl creates a GitHub Release (CalVer tag) ──────────────────
   create-release:
-    uses: layer87-labs/relctl-action/.github/workflows/create-release.yml@v1
+    uses: layer87-labs/relctl-action/.github/workflows/create-release.yml@main
     with:
       version-scheme: calver
     secrets:

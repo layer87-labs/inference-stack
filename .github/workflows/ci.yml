@@ -10,7 +10,7 @@ permissions:
 jobs:
   # ── relctl: PR metadata + version preview ─────────────────────────────────
   build-info:
-    uses: layer87-labs/relctl-action/.github/workflows/generate-build-infos.yml@v1
+    uses: layer87-labs/relctl-action/.github/workflows/generate-build-infos.yml@main
     secrets:
       token: ${{ secrets.GITHUB_TOKEN }}
 
