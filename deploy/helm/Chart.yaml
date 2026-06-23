@@ -2,8 +2,8 @@ apiVersion: v2
 name: inference-stack
 description: >
   Inference Stack — unified CPU-based model serving for embedding,
-  reranking and transcription. Includes TEI (BGE-M3), FlagEmbedding Reranker
-  (BGE-reranker-v2-m3), Whisper ASR and an inference-router that exposes
+  reranking and transcription. Includes TEI (BGE-M3), TEI Reranker
+  (BGE-reranker-v2-m3 via ONNX/ORT), Whisper ASR and an inference-router that exposes
   all models under a single OpenAI-compatible endpoint.
 
 type: application
