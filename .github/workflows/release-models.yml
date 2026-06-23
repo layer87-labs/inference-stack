@@ -78,6 +78,7 @@ jobs:
           docker build \
             -f deploy/Containerfile.tei-reranker-model-init \
             --build-arg MODEL_ID=BAAI/bge-reranker-v2-m3 \
+            --build-arg MODEL_DATE=$(date +%Y.%m) \
             -t ${{ env.REGISTRY }}/tei-reranker-model-init:${{ env.MODEL_TAG }} \
             -t ${{ env.REGISTRY }}/tei-reranker-model-init:latest \
             .
