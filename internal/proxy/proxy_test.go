@@ -163,8 +163,7 @@ func TestRouting_Reranker(t *testing.T) {
 	const responseBody = `{"object":"list","data":[{"index":0,"relevance_score":0.9}]}`
 
 	backend := mockBackend(t, map[string]http.HandlerFunc{
-		"/v1/rerank": jsonOK(responseBody),
-		"/rerank":    jsonOK(responseBody),
+		"/rerank": jsonOK(responseBody),
 	})
 
 	cfg := buildConfig(
@@ -174,6 +173,7 @@ func TestRouting_Reranker(t *testing.T) {
 	)
 	router := buildRouter(t, cfg)
 
+	// Both /v1/rerank (OpenAI-style) and /rerank (TEI-native) must route to backend /rerank.
 	for _, path := range []string{"/v1/rerank", "/rerank"} {
 		req := httptest.NewRequest(http.MethodPost, path,
 			strings.NewReader(`{"query":"q","documents":["d1","d2"]}`))
@@ -181,7 +181,7 @@ func TestRouting_Reranker(t *testing.T) {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
-			t.Errorf("path %s: status = %d, want 200", path, w.Code)
+			t.Errorf("path %s: status = %d, want 200 (backend received unexpected path or no route)", path, w.Code)
 		}
 	}
 }

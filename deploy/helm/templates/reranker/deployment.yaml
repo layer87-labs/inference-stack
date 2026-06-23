@@ -42,22 +42,22 @@ spec:
         - name: model
           mountPath: /model
       containers:
-      - name: reranker
+      - name: tei
         image: {{ include "inference-stack.image" (dict "registry" .Values.global.imageRegistry "repo" .Values.reranker.image.repository "tag" .Values.reranker.image.tag "appVersion" .Chart.AppVersion) }}
         imagePullPolicy: {{ .Values.reranker.image.pullPolicy }}
+        args:
+          - "--model-id"
+          - {{ .Values.reranker.modelID | quote }}
+          - "--port"
+          - {{ .Values.reranker.service.port | quote }}
+          {{- range .Values.reranker.extraArgs }}
+          - {{ . | quote }}
+          {{- end }}
         env:
         - name: HF_HUB_OFFLINE
           value: "1"
         - name: HUGGINGFACE_OFFLINE
           value: "1"
-        {{- if .Values.reranker.maxLength }}
-        - name: MAX_LENGTH
-          value: {{ .Values.reranker.maxLength | quote }}
-        {{- end }}
-        {{- if .Values.reranker.useFp16 }}
-        - name: USE_FP16
-          value: {{ .Values.reranker.useFp16 | quote }}
-        {{- end }}
         ports:
         - name: http
           containerPort: {{ .Values.reranker.service.port }}

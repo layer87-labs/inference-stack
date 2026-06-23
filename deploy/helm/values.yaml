@@ -9,12 +9,11 @@
 #   router.enabled:    true
 #
 # Architecture:
-#   tei-runtime        — TEI image for embedding (BGE-M3)
-#   tei-model-init     — init container that copies baked model to a shared volume
-#   reranker-server    — FlagEmbedding HTTP server for reranking (BGE-reranker-v2-m3)
-#   reranker-model-init — init container that copies baked model to a shared volume
-#   whisper            — ASR server with model baked in
-#   router             — unified OpenAI-compatible proxy
+#   tei-runtime             — TEI image for embedding (BGE-M3) and reranking (bge-reranker-v2-m3)
+#   tei-model-init          — init container that copies baked embedding model to a shared volume
+#   tei-reranker-model-init — init container that copies ONNX-exported reranker model to a shared volume
+#   whisper                 — ASR server with model baked in
+#   router                  — unified OpenAI-compatible proxy
 
 # ── Global ────────────────────────────────────────────────────────────────────
 global:
@@ -132,45 +131,49 @@ embedding:
   tolerations: []
 
 # ── Reranker — BAAI/bge-reranker-v2-m3 ───────────────────────────────────────
-# Uses FlagEmbedding (native CPU) — model via init container + PVC.
-# TEI does not support reranking; this is a dedicated FlagEmbedding server.
+# Uses TEI (Rust/ONNX via ORT backend) — same runtime image as embedding.
+# Model is exported to ONNX during image build (tei-reranker-model-init).
+# TEI auto-detects SequenceClassification architecture → reranker mode.
+# Router rewrites /v1/rerank → /rerank before forwarding to this backend.
 reranker:
   enabled: false
 
-  # reranker-server image — lightweight FlagEmbedding HTTP server
+  # tei-runtime image — same runtime as embedding, handles reranking via ONNX
   image:
-    repository: reranker-server
+    repository: tei-runtime
     tag: "" # defaults to .Chart.AppVersion
     pullPolicy: IfNotPresent
 
-  # Model init container — copies baked model to shared /model volume
-  # Model images are versioned independently: <model>-<YYYY.MM>
+  # Model init container — ONNX-exported bge-reranker-v2-m3
   modelInit:
     image:
-      repository: reranker-model-init
-      tag: "bge-reranker-v2-m3-2026.06" # model images have their own version scheme
+      repository: tei-reranker-model-init
+      tag: "bge-reranker-v2-m3-2026.06"
       pullPolicy: IfNotPresent
 
-  # Model config
-  maxLength: "512" # max sequence length
-  useFp16: "true" # fp16 for speed (negligible quality impact)
+  modelID: "/model"
+
+  # CPU tuning: ORT warmup with default 16384 batch tokens OOMs on CPU nodes.
+  # 2048 keeps RSS within 8Gi limit during warmup and inference.
+  #
+  # Resource requirements by --max-batch-tokens (bge-reranker-v2-m3, fp32 ONNX, CPU):
+  #   2048  -> 4-8Gi  RSS  (recommended for CPU)
+  #   4096  -> 8-12Gi RSS  (may OOM on 8Gi limit)
+  #   16384 -> OOM         (GPU-only)
+  extraArgs:
+    - "--max-batch-tokens"
+    - "2048"
 
   service:
     port: 80
 
-  # CPU tuning: FlagEmbedding is lightweight on CPU.
-  # BGE-reranker-v2-m3 (~0.6B params) fits comfortably in 4Gi.
-  #
-  # Resource requirements (BGE-reranker-v2-m3, fp16, CPU):
-  #   maxLength=512  → 2-4Gi  RSS  (recommended)
-  #   maxLength=1024 → 4-6Gi  RSS
   resources:
     requests:
       cpu: "500m"
-      memory: "2Gi"
-    limits:
-      cpu: "2"
       memory: "4Gi"
+    limits:
+      cpu: "4"
+      memory: "8Gi"
 
   # Model volume — PVC keeps model across pod restarts (avoids re-copy)
   persistence:
@@ -180,7 +183,7 @@ reranker:
 
   startupProbe:
     periodSeconds: 15
-    failureThreshold: 40 # up to 10 min for model load
+    failureThreshold: 40 # up to 10 min for ONNX model load + ORT warmup
 
   securityContext:
     runAsNonRoot: true

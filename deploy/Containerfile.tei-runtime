@@ -7,7 +7,7 @@
 # which points to the model directory populated by the init container.
 #
 # Embedding:  --model-id /model --pooling cls
-# Reranker:   --model-id /model --rerank
+# Reranker:   --model-id /model  (TEI auto-detects SequenceClassification → reranker)
 #
 # Requires: model populated at /model before start (via tei-model-init).
 # No model included — runtime image stays small (~938 MB).

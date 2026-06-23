@@ -21,7 +21,7 @@ WHISPER_MODEL   ?= $(shell grep '^ARG WHISPER_MODEL=' deploy/Containerfile.whisp
         docker docker/router \
         docker/tei-base docker/tei-runtime \
         docker/tei-model-init-embedding \
-        docker/reranker-model-init docker/reranker-server \
+        docker/tei-reranker-model-init \
         docker/whisper \
         push push/router push/tei push/reranker push/whisper \
         versions
@@ -96,21 +96,16 @@ docker/tei-model-init-embedding:
 	  -t $(REGISTRY)/tei-model-init:$(VERSION) \
 	  .
 
-## ── Docker / Track E: Reranker ──────────────────────────────────────────────
+## ── Docker / Track E: Reranker (TEI/ONNX) ──────────────────────────────────
 
-# reranker-model-init — tag = CalVer
-docker/reranker-model-init:
+# tei-reranker-model-init — ONNX-exported bge-reranker-v2-m3
+# Uses optimum-cli to export SafeTensors → ONNX (required by TEI ORT backend).
+docker/tei-reranker-model-init:
 	docker build \
-	  -f deploy/Containerfile.reranker-model-init \
+	  -f deploy/Containerfile.tei-reranker-model-init \
 	  --build-arg MODEL_ID=BAAI/bge-reranker-v2-m3 \
-	  -t $(REGISTRY)/reranker-model-init:$(VERSION) \
-	  .
-
-# reranker-server — tag = CalVer
-docker/reranker-server:
-	docker build \
-	  -f deploy/Containerfile.reranker-server \
-	  -t $(REGISTRY)/reranker-server:$(VERSION) \
+	  --build-arg MODEL_DATE=$(MODEL_DATE) \
+	  -t $(REGISTRY)/tei-reranker-model-init:$(VERSION) \
 	  .
 
 ## ── Docker / Track D: Whisper ───────────────────────────────────────────────
@@ -128,7 +123,7 @@ docker/whisper:
 
 docker: docker/router docker/tei-base docker/tei-runtime \
         docker/tei-model-init-embedding \
-        docker/reranker-model-init docker/reranker-server \
+        docker/tei-reranker-model-init \
         docker/whisper
 
 ## ── Push ─────────────────────────────────────────────────────────────────────
@@ -142,8 +137,7 @@ push/tei:
 	docker push $(REGISTRY)/tei-model-init:$(VERSION)
 
 push/reranker:
-	docker push $(REGISTRY)/reranker-model-init:$(VERSION)
-	docker push $(REGISTRY)/reranker-server:$(VERSION)
+	docker push $(REGISTRY)/tei-reranker-model-init:$(VERSION)
 
 push/whisper:
 	docker push $(REGISTRY)/whisper:$(VERSION)
@@ -159,6 +153,5 @@ versions:
 	@echo "  tei-base            → $(REGISTRY)/tei-base:$(VERSION)"
 	@echo "  tei-runtime         → $(REGISTRY)/tei-runtime:$(VERSION)"
 	@echo "  tei-model-init      → $(REGISTRY)/tei-model-init:$(VERSION)"
-	@echo "  reranker-model-init → $(REGISTRY)/reranker-model-init:$(VERSION)"
-	@echo "  reranker-server     → $(REGISTRY)/reranker-server:$(VERSION)"
+  @echo "  tei-reranker-model-init → $(REGISTRY)/tei-reranker-model-init:$(VERSION)"
 	@echo "  whisper             → $(REGISTRY)/whisper:$(VERSION)"

@@ -1,0 +1,65 @@
+# syntax=docker/dockerfile:1
+#
+# Containerfile.tei-reranker-model-init — TEI-compatible reranker model init container
+#
+# Downloads bge-reranker-v2-m3 and exports it to ONNX via Optimum.
+# TEI requires onnx/model.onnx for XLMRoberta-based rerankers (ORT backend).
+#
+# Build:
+#   docker build -f deploy/Containerfile.tei-reranker-model-init \
+#     --build-arg MODEL_ID=BAAI/bge-reranker-v2-m3 \
+#     --build-arg MODEL_DATE=2026.06 \
+#     -t ghcr.io/layer87-labs/tei-reranker-model-init:bge-reranker-v2-m3-2026.06 .
+
+ARG MODEL_ID=BAAI/bge-reranker-v2-m3
+ARG MODEL_DATE=2026.06
+
+# ── Stage 1: download + ONNX export ───────────────────────────────────────────
+FROM python:3.12-slim AS builder
+
+ARG MODEL_ID
+
+RUN pip install --quiet --no-cache-dir \
+      "huggingface_hub[cli]>=0.24" \
+      "optimum[onnxruntime]>=1.19" \
+      "transformers>=4.40" \
+      "torch>=2.2" \
+      --extra-index-url https://download.pytorch.org/whl/cpu
+
+# Download model (safetensors + tokenizer, no PyTorch .bin needed for export)
+RUN hf download "${MODEL_ID}" \
+      --exclude "*.ot" \
+      --exclude "flax_model*" \
+      --exclude "tf_model*" \
+      --local-dir /model-src
+
+# Export to ONNX — task=text-classification = cross-encoder (reranker)
+RUN optimum-cli export onnx \
+      --model /model-src \
+      --task text-classification \
+      --opset 14 \
+      --framework pt \
+      /model-onnx/
+
+# ── Stage 2: minimal init container ──────────────────────────────────────────
+FROM debian:bookworm-slim
+
+ARG MODEL_ID
+ARG MODEL_DATE
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends rsync && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -g 1000 tei && \
+    useradd -u 1000 -g tei -m -s /bin/bash tei
+
+# Copy ONNX export output (includes onnx/model.onnx + tokenizer + config)
+COPY --from=builder --chown=tei:tei /model-onnx /model-baked
+
+USER 1000
+
+# Idempotent copy to /model (shared PVC, populated once)
+ENTRYPOINT ["sh", "-c", "rsync -rlgoDv --ignore-existing /model-baked/ /model/ && echo 'tei-reranker-model-init: done'"]
+
+LABEL org.opencontainers.image.source="https://github.com/layer87-labs/inference-stack"
+LABEL org.opencontainers.image.description="TEI reranker model init — bge-reranker-v2-m3 exported to ONNX for TEI ORT backend"

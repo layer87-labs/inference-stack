@@ -114,6 +114,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.dispatch(w, req, r.cfg.Embedding, "embedding")
 
 	case strings.HasPrefix(path, "/rerank") || strings.HasPrefix(path, "/v1/rerank"):
+		// TEI exposes /rerank; rewrite OpenAI-style /v1/rerank to /rerank.
+		if strings.HasPrefix(path, "/v1/rerank") {
+			req.URL.Path = strings.TrimPrefix(path, "/v1")
+		}
 		r.dispatch(w, req, r.cfg.Reranker, "reranker")
 
 	case strings.HasPrefix(path, "/v1/audio/transcriptions") || strings.HasPrefix(path, "/v1/audio/translations"):
