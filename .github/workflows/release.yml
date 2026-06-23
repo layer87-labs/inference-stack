@@ -65,11 +65,6 @@ jobs:
           make docker/tei-runtime VERSION=${{ env.VERSION }}
           docker push ${{ env.REGISTRY }}/tei-runtime:${{ env.VERSION }}
 
-      - name: Build and push reranker server
-        run: |
-          make docker/reranker-server VERSION=${{ env.VERSION }}
-          docker push ${{ env.REGISTRY }}/reranker-server:${{ env.VERSION }}
-
       # ── Helm chart (OCI → ghcr.io) ───────────────────────────────────────
 
       - name: Package and push Helm chart

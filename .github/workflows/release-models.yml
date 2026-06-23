@@ -13,9 +13,8 @@ on:
     branches: [main]
     paths:
       - "deploy/Containerfile.tei-model-init"
-      - "deploy/Containerfile.reranker-model-init"
+      - "deploy/Containerfile.tei-reranker-model-init"
       - "deploy/Containerfile.whisper"
-      - "deploy/reranker/server.py"
 
 permissions:
   contents: read
@@ -74,16 +73,16 @@ jobs:
       - name: Set model tag
         run: echo "MODEL_TAG=bge-reranker-v2-m3-$(date +%Y.%m)" >> $GITHUB_ENV
 
-      - name: Build and push reranker model init
+      - name: Build and push TEI reranker model init (ONNX)
         run: |
           docker build \
-            -f deploy/Containerfile.reranker-model-init \
+            -f deploy/Containerfile.tei-reranker-model-init \
             --build-arg MODEL_ID=BAAI/bge-reranker-v2-m3 \
-            -t ${{ env.REGISTRY }}/reranker-model-init:${{ env.MODEL_TAG }} \
-            -t ${{ env.REGISTRY }}/reranker-model-init:latest \
+            -t ${{ env.REGISTRY }}/tei-reranker-model-init:${{ env.MODEL_TAG }} \
+            -t ${{ env.REGISTRY }}/tei-reranker-model-init:latest \
             .
-          docker push ${{ env.REGISTRY }}/reranker-model-init:${{ env.MODEL_TAG }}
-          docker push ${{ env.REGISTRY }}/reranker-model-init:latest
+          docker push ${{ env.REGISTRY }}/tei-reranker-model-init:${{ env.MODEL_TAG }}
+          docker push ${{ env.REGISTRY }}/tei-reranker-model-init:latest
 
   whisper-model:
     if: >
