@@ -40,10 +40,6 @@ spec:
           value: {{ .Values.whisper.modelName | quote }}
         - name: ASR_ENGINE
           value: "faster_whisper"
-        - name: HF_HUB_OFFLINE
-          value: "1"
-        - name: HUGGINGFACE_OFFLINE
-          value: "1"
         ports:
         - name: http
           containerPort: {{ .Values.whisper.service.port }}
@@ -64,6 +60,14 @@ spec:
           periodSeconds: 30
           timeoutSeconds: 10
           failureThreshold: 3
+        {{- if .Values.whisper.startupProbe.enabled }}
+        startupProbe:
+          httpGet:
+            path: {{ .Values.whisper.startupProbe.httpGet.path }}
+            port: {{ .Values.whisper.startupProbe.httpGet.port }}
+          periodSeconds: {{ .Values.whisper.startupProbe.periodSeconds }}
+          failureThreshold: {{ .Values.whisper.startupProbe.failureThreshold }}
+        {{- end }}
         resources:
           {{- toYaml .Values.whisper.resources | nindent 10 }}
         securityContext:

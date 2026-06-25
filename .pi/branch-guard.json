@@ -1,0 +1,9 @@
+{
+  "workflow": "direct-push",
+  "supervision": "full-control",
+  "defaultBranch": "main",
+  "protectedBranches": [
+    "main",
+    "production"
+  ]
+}

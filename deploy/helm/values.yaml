@@ -210,15 +210,15 @@ whisper:
   modelName: "large-v3-turbo"
 
   service:
-    port: 8080
+    port: 9000
 
   resources:
     requests:
-      cpu: "1000m"
-      memory: "4Gi"
+      cpu: "500m"
+      memory: "2Gi"
     limits:
-      cpu: "8000m"
-      memory: "8Gi"
+      cpu: "2000m"
+      memory: "4Gi"
 
   securityContext:
     runAsNonRoot: true
@@ -227,6 +227,20 @@ whisper:
     readOnlyRootFilesystem: false
     capabilities:
       drop: [ALL]
+    # ctranslate2.so (faster-whisper) uses mprotect(PROT_EXEC) — needs
+    # relaxed seccomp until ctranslate2 is rebuilt without execstack.
+    seccompProfile:
+      type: Unconfined
+
+  # Startup probe — whisper loads the model on first request and may
+  # need 30-60s to warm up on CPU.
+  startupProbe:
+    enabled: true
+    httpGet:
+      path: /docs
+      port: http
+    periodSeconds: 15
+    failureThreshold: 40
 
   imagePullSecrets: []
   nodeSelector: {}

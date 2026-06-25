@@ -9,10 +9,11 @@
 # Whisper large-v3-turbo is ~800 MB, small enough to keep in a single image).
 #
 # Hardened:
-#   1. execstack cleared on libctranslate2.so (fixes mprotect PROT_EXEC crash)
-#   2. Model baked in — no cold-start download
+#   1. execstack cleared on libctranslate2*.so (fixes mprotect PROT_EXEC crash)
+#   2. Model baked into /home/whisper/.cache — no cold-start download
 #   3. Non-root (uid 1000)
-#   4. HF_HUB_OFFLINE=1 — no outbound HuggingFace calls at runtime
+#   4. HF_HUB_OFFLINE=0 — huggingface_hub xet cache requires live API validation
+#      even with a fully-populated cache; offline mode breaks model loading.
 
 ARG WHISPER_VERSION=v1.9.1
 ARG WHISPER_MODEL=large-v3-turbo
@@ -32,25 +33,37 @@ USER root
 
 ENV ASR_MODEL=${WHISPER_MODEL}
 ENV ASR_ENGINE=faster_whisper
-ENV UVICORN_PORT=8080
+# Upstream image hardcodes port 9000; UVICORN_PORT env is ignored by uvicorn.
+# We accept the default — the chart must map service port 9000.
+ENV UVICORN_PORT=9000
 
-# Clear executable-stack ELF flag on ctranslate2 shared library.
+# Use venv python for everything.
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Clear executable-stack ELF flag on ctranslate2 shared libraries.
 # Required for securityContext.allowPrivilegeEscalation=false.
 COPY --from=tools /usr/bin/patchelf /usr/bin/patchelf
-RUN find /app/.venv -name 'libctranslate2*.so*' -exec /usr/bin/patchelf --clear-execstack {} \; && \
+RUN find /app/.venv -name 'libctranslate2*' -exec patchelf --clear-execstack {} \; && \
     rm -f /usr/bin/patchelf
 
-# Download model at build time — must happen BEFORE HF_HUB_OFFLINE is set.
-RUN python -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL}', device='cpu', compute_type='int8')" || true
-
-# Lock down — no outbound HuggingFace calls at runtime.
-ENV HF_HUB_OFFLINE=1
-ENV HUGGINGFACE_OFFLINE=1
-
-# Non-root user + ownership fix.
+# Create non-root user before downloading the model.
 RUN groupadd -g 1000 whisper && \
-    useradd -u 1000 -g whisper -m -s /bin/bash whisper && \
-    chown -R whisper:whisper /app /root/.cache 2>/dev/null || true
+    useradd -u 1000 -g whisper -m -s /bin/bash whisper
+
+# Download model at build time into the whisper user's home cache.
+RUN HF_HUB_OFFLINE=0 HUGGINGFACE_OFFLINE=0 \
+    HOME=/home/whisper \
+    python -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL}', device='cpu', compute_type='int8')"
+
+# Fix ownership (model was downloaded as root into /home/whisper/.cache).
+RUN chown -R whisper:whisper /home/whisper /app
+
+# Don't enforce HF offline mode: huggingface_hub xet cache (used by
+# mobiuslabsgmbh/faster-whisper-large-v3-turbo) requires a live API call
+# even when the cache is fully populated. Model won't be re-downloaded
+# since it's already cached.
+ENV HF_HUB_OFFLINE=0
+ENV HUGGINGFACE_OFFLINE=0
 
 USER 1000
 
