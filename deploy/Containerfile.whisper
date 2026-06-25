@@ -32,8 +32,6 @@ USER root
 
 ENV ASR_MODEL=${WHISPER_MODEL}
 ENV ASR_ENGINE=faster_whisper
-ENV HF_HUB_OFFLINE=1
-ENV HUGGINGFACE_OFFLINE=1
 ENV UVICORN_PORT=8080
 
 # Clear executable-stack ELF flag on ctranslate2 shared library.
@@ -42,8 +40,12 @@ COPY --from=tools /usr/bin/patchelf /usr/bin/patchelf
 RUN find /app/.venv -name 'libctranslate2*.so*' -exec /usr/bin/patchelf --clear-execstack {} \; && \
     rm -f /usr/bin/patchelf
 
-# Download model at build time.
+# Download model at build time — must happen BEFORE HF_HUB_OFFLINE is set.
 RUN python -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL}', device='cpu', compute_type='int8')" || true
+
+# Lock down — no outbound HuggingFace calls at runtime.
+ENV HF_HUB_OFFLINE=1
+ENV HUGGINGFACE_OFFLINE=1
 
 # Non-root user + ownership fix.
 RUN groupadd -g 1000 whisper && \
