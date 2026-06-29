@@ -49,11 +49,20 @@ router:
 
   healthCheckInterval: "15s"
 
+  # Pod-level security context
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
   securityContext:
     runAsNonRoot: true
     runAsUser: 65532
+    runAsGroup: 65532
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: true
+    seccompProfile:
+      type: RuntimeDefault
     capabilities:
       drop: [ALL]
 
@@ -79,6 +88,16 @@ embedding:
       repository: tei-model-init
       tag: "bge-m3-2026.06" # model images have their own version scheme
       pullPolicy: IfNotPresent
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: false
+      seccompProfile:
+        type: RuntimeDefault
+      capabilities:
+        drop: [ALL]
 
   # TEI args
   modelID: "/model" # model is loaded from volume, not HuggingFace
@@ -118,11 +137,20 @@ embedding:
     periodSeconds: 15
     failureThreshold: 40 # up to 10 min for model load
 
+  # Pod-level security context
+  podSecurityContext:
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+
   securityContext:
     runAsNonRoot: true
     runAsUser: 1000
+    runAsGroup: 1000
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: false
+    seccompProfile:
+      type: RuntimeDefault
     capabilities:
       drop: [ALL]
 
@@ -150,6 +178,16 @@ reranker:
       repository: tei-reranker-model-init
       tag: "bge-reranker-v2-m3-2026.06"
       pullPolicy: IfNotPresent
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: false
+      seccompProfile:
+        type: RuntimeDefault
+      capabilities:
+        drop: [ALL]
 
   modelID: "/model"
 
@@ -185,11 +223,20 @@ reranker:
     periodSeconds: 15
     failureThreshold: 40 # up to 10 min for ONNX model load + ORT warmup
 
+  # Pod-level security context
+  podSecurityContext:
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+
   securityContext:
     runAsNonRoot: true
     runAsUser: 1000
+    runAsGroup: 1000
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: false
+    seccompProfile:
+      type: RuntimeDefault
     capabilities:
       drop: [ALL]
 
@@ -220,9 +267,17 @@ whisper:
       cpu: "2000m"
       memory: "4Gi"
 
+  # Pod-level security context. ctranslate2.so requires Unconfined seccomp
+  # (see container securityContext below), so the pod default matches.
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: Unconfined
+
   securityContext:
     runAsNonRoot: true
     runAsUser: 1000
+    runAsGroup: 1000
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: false
     capabilities:

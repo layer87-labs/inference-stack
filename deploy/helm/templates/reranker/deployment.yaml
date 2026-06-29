@@ -23,7 +23,7 @@ spec:
         app.kubernetes.io/component: reranker
     spec:
       securityContext:
-        fsGroup: 1000
+        {{- toYaml .Values.reranker.podSecurityContext | nindent 8 }}
       {{- include "inference-stack.imagePullSecrets" (dict "local" .Values.reranker.imagePullSecrets "global" .Values.global.imagePullSecrets) | nindent 6 }}
       {{- with (coalesce .Values.reranker.nodeSelector .Values.global.nodeSelector) }}
       nodeSelector:
@@ -38,6 +38,8 @@ spec:
         image: {{ include "inference-stack.image" (dict "registry" .Values.global.imageRegistry "repo" .Values.reranker.modelInit.image.repository "tag" .Values.reranker.modelInit.image.tag "appVersion" .Chart.AppVersion) }}
         imagePullPolicy: {{ .Values.reranker.modelInit.image.pullPolicy }}
         command: ["sh", "-c", "rsync -rlgoDv --ignore-existing /model-baked/ /model/ && echo 'reranker-init: done'"]
+        securityContext:
+          {{- toYaml .Values.reranker.modelInit.securityContext | nindent 10 }}
         volumeMounts:
         - name: model
           mountPath: /model

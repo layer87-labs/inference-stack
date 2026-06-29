@@ -25,7 +25,7 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       securityContext:
-        runAsNonRoot: true
+        {{- toYaml .Values.router.podSecurityContext | nindent 8 }}
       {{- include "inference-stack.imagePullSecrets" (dict "local" .Values.router.imagePullSecrets "global" .Values.global.imagePullSecrets) | nindent 6 }}
       {{- with (coalesce .Values.router.nodeSelector .Values.global.nodeSelector) }}
       nodeSelector:

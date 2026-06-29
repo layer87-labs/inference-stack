@@ -22,6 +22,8 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: whisper
     spec:
+      securityContext:
+        {{- toYaml .Values.whisper.podSecurityContext | nindent 8 }}
       {{- include "inference-stack.imagePullSecrets" (dict "local" .Values.whisper.imagePullSecrets "global" .Values.global.imagePullSecrets) | nindent 6 }}
       {{- with (coalesce .Values.whisper.nodeSelector .Values.global.nodeSelector) }}
       nodeSelector:
