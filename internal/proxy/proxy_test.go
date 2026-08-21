@@ -40,7 +40,7 @@ func jsonOK(body string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, body)
+		_, _ = io.WriteString(w, body)
 	}
 }
 
@@ -442,7 +442,7 @@ func TestRouterHealthEndpoint(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -458,6 +458,101 @@ func TestRouterHealthEndpoint(t *testing.T) {
 	}
 	if body["status"] != "ok" {
 		t.Errorf("status field = %v, want ok", body["status"])
+	}
+}
+
+func TestMaxConcurrent_FastReject(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 10)
+
+	backend := mockBackend(t, map[string]http.HandlerFunc{
+		"/v1/embeddings": func(w http.ResponseWriter, _ *http.Request) {
+			started <- struct{}{}
+			<-release
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"object":"list","data":[]}`)
+		},
+	})
+
+	cfg := buildConfig(
+		config.Backend{Name: "embedding", BaseURL: backend.URL, Enabled: true, Timeout: 5 * time.Second, MaxConcurrent: 2},
+		config.Backend{Name: "reranker"},
+		config.Backend{Name: "whisper"},
+	)
+	router := buildRouter(t, cfg)
+
+	doReq := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+
+	// Saturate the limit with 2 in-flight requests that block on `release`.
+	results := make(chan *httptest.ResponseRecorder, 3)
+	for i := 0; i < 2; i++ {
+		go func() { results <- doReq() }()
+	}
+	<-started
+	<-started
+
+	// A 3rd concurrent request must be fast-rejected (503 + Retry-After),
+	// not queued behind the 2 in-flight ones.
+	w := doReq()
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("3rd concurrent request: status = %d, want 503", w.Code)
+	}
+	if ra := w.Header().Get("Retry-After"); ra == "" {
+		t.Errorf("3rd concurrent request: missing Retry-After header")
+	}
+	var errResp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("response is not valid JSON: %v\nbody: %s", err, w.Body.String())
+	}
+	if errResp["error"] != "backend_overloaded" {
+		t.Errorf("error = %q, want backend_overloaded", errResp["error"])
+	}
+
+	// Release the 2 in-flight requests; both should complete successfully,
+	// releasing their semaphore slots.
+	close(release)
+	for i := 0; i < 2; i++ {
+		w := <-results
+		if w.Code != http.StatusOK {
+			t.Errorf("in-flight request: status = %d, want 200", w.Code)
+		}
+	}
+
+	// With the slots released, a subsequent request must succeed again
+	// (proves the semaphore slot is correctly released, not leaked). The
+	// mock handler still blocks on `release`, but that channel is already
+	// closed, so this call returns immediately.
+	w2 := doReq()
+	if w2.Code != http.StatusOK {
+		t.Errorf("request after release: status = %d, want 200", w2.Code)
+	}
+}
+
+func TestMaxConcurrent_ZeroDisablesLimit(t *testing.T) {
+	backend := mockBackend(t, map[string]http.HandlerFunc{
+		"/v1/embeddings": jsonOK(`{"object":"list","data":[]}`),
+	})
+
+	cfg := buildConfig(
+		config.Backend{Name: "embedding", BaseURL: backend.URL, Enabled: true, Timeout: 5 * time.Second, MaxConcurrent: 0},
+		config.Backend{Name: "reranker"},
+		config.Backend{Name: "whisper"},
+	)
+	router := buildRouter(t, cfg)
+
+	for i := 0; i < 20; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, want 200 (MaxConcurrent=0 must mean unbounded)", i, w.Code)
+		}
 	}
 }
 

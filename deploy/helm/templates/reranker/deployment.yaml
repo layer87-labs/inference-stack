@@ -7,9 +7,9 @@ metadata:
     {{- include "inference-stack.labels" . | nindent 4 }}
     app.kubernetes.io/component: reranker
 spec:
-  replicas: 1
+  replicas: {{ .Values.reranker.replicaCount }}
   strategy:
-    type: Recreate
+    type: RollingUpdate
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "inference-stack.name" . }}
@@ -75,16 +75,16 @@ spec:
           httpGet:
             path: /health
             port: http
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
+          periodSeconds: {{ .Values.reranker.readinessProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.reranker.readinessProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.reranker.readinessProbe.failureThreshold }}
         livenessProbe:
           httpGet:
             path: /health
             port: http
-          periodSeconds: 30
-          timeoutSeconds: 10
-          failureThreshold: 3
+          periodSeconds: {{ .Values.reranker.livenessProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.reranker.livenessProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.reranker.livenessProbe.failureThreshold }}
         resources:
           {{- toYaml .Values.reranker.resources | nindent 10 }}
         securityContext:
@@ -97,7 +97,7 @@ spec:
           mountPath: /data
       volumes:
       - name: model
-        {{- if .Values.reranker.persistence.enabled }}
+        {{- if and .Values.reranker.persistence.enabled (le (int .Values.reranker.replicaCount) 1) }}
         persistentVolumeClaim:
           claimName: {{ include "inference-stack.fullname" . }}-reranker-model
         {{- else }}
@@ -107,7 +107,7 @@ spec:
       - name: data
         emptyDir:
           sizeLimit: 1Gi
-{{- if .Values.reranker.persistence.enabled }}
+{{- if and .Values.reranker.persistence.enabled (le (int .Values.reranker.replicaCount) 1) }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

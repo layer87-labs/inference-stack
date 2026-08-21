@@ -58,13 +58,13 @@ func main() {
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"service":"inference-router","status":"ok"}`))
+			_, _ = w.Write([]byte(`{"service":"inference-router","status":"ok"}`))
 			return
 		}
 		http.NotFound(w, r)
@@ -82,7 +82,7 @@ func main() {
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("/metrics", promhttp.Handler())
 	metricsMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 	metricsServer := &http.Server{
 		Addr:        cfg.MetricsAddr,

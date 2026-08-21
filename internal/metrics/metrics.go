@@ -57,4 +57,11 @@ var (
 		Name:      "backend_up",
 		Help:      "1 if the backend is healthy, 0 otherwise.",
 	}, []string{"backend"})
+
+	RejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "inference",
+		Subsystem: "router",
+		Name:      "rejected_total",
+		Help:      "Total number of requests fast-rejected (503) because the backend's MaxConcurrent bound was reached.",
+	}, []string{"backend"})
 )
