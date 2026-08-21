@@ -9,7 +9,20 @@ metadata:
 spec:
   replicas: {{ .Values.reranker.replicaCount }}
   strategy:
+    {{- /*
+    A persistence-backed single replica reuses one fixed-name ReadWriteOnce
+    PVC (see the persistence block below) — RollingUpdate would schedule the
+    new pod before the old one releases the volume, deadlocking on a
+    Multi-Attach error since RWO can only be attached to one pod at a time.
+    Recreate avoids that by tearing down the old pod first. Once
+    replicaCount>1, persistence is disabled entirely (see below), so
+    RollingUpdate is safe there.
+    */}}
+    {{- if and .Values.reranker.persistence.enabled (le (int .Values.reranker.replicaCount) 1) }}
+    type: Recreate
+    {{- else }}
     type: RollingUpdate
+    {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "inference-stack.name" . }}
