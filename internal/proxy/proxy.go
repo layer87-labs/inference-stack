@@ -27,8 +27,13 @@ type Router struct {
 	checker   *health.Checker
 	log       *zap.Logger
 	proxies   map[string]*httputil.ReverseProxy // keyed by backend name
+	sem       map[string]chan struct{}          // per-backend concurrency bound, keyed by backend name
 	startedAt int64                             // unix timestamp, used as fallback "created" for /v1/models
 }
+
+// retryAfterSeconds is sent on a 503 fast-reject so well-behaved clients
+// back off instead of retrying immediately and compounding the overload.
+const retryAfterSeconds = "3"
 
 // New creates a Router and pre-builds one ReverseProxy per enabled backend.
 func New(cfg *config.Config, checker *health.Checker, log *zap.Logger) (*Router, error) {
@@ -37,6 +42,7 @@ func New(cfg *config.Config, checker *health.Checker, log *zap.Logger) (*Router,
 		checker:   checker,
 		log:       log,
 		proxies:   make(map[string]*httputil.ReverseProxy),
+		sem:       make(map[string]chan struct{}),
 		startedAt: time.Now().Unix(),
 	}
 
@@ -44,6 +50,10 @@ func New(cfg *config.Config, checker *health.Checker, log *zap.Logger) (*Router,
 		target, err := url.Parse(b.BaseURL)
 		if err != nil {
 			return nil, fmt.Errorf("invalid backend URL for %s: %w", b.Name, err)
+		}
+
+		if b.MaxConcurrent > 0 {
+			r.sem[b.Name] = make(chan struct{}, b.MaxConcurrent)
 		}
 
 		backend := b // capture
@@ -150,6 +160,27 @@ func (r *Router) dispatch(w http.ResponseWriter, req *http.Request, b config.Bac
 	if !ok {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
+	}
+
+	if sem, bounded := r.sem[name]; bounded {
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+		default:
+			metrics.RejectedTotal.WithLabelValues(name).Inc()
+			r.log.Warn("backend at capacity, fast-rejecting",
+				zap.String("backend", name),
+				zap.Int("max_concurrent", b.MaxConcurrent),
+			)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", retryAfterSeconds)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error":   "backend_overloaded",
+				"message": fmt.Sprintf("backend %s is at its concurrency limit (%d); retry after backoff", name, b.MaxConcurrent),
+			})
+			return
+		}
 	}
 
 	// Track request size

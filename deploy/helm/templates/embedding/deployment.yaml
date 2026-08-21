@@ -7,9 +7,9 @@ metadata:
     {{- include "inference-stack.labels" . | nindent 4 }}
     app.kubernetes.io/component: embedding
 spec:
-  replicas: 1
+  replicas: {{ .Values.embedding.replicaCount }}
   strategy:
-    type: Recreate
+    type: RollingUpdate
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "inference-stack.name" . }}
@@ -84,16 +84,16 @@ spec:
           httpGet:
             path: /health
             port: http
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
+          periodSeconds: {{ .Values.embedding.readinessProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.embedding.readinessProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.embedding.readinessProbe.failureThreshold }}
         livenessProbe:
           httpGet:
             path: /health
             port: http
-          periodSeconds: 30
-          timeoutSeconds: 10
-          failureThreshold: 3
+          periodSeconds: {{ .Values.embedding.livenessProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.embedding.livenessProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.embedding.livenessProbe.failureThreshold }}
         resources:
           {{- toYaml .Values.embedding.resources | nindent 10 }}
         securityContext:
@@ -106,7 +106,7 @@ spec:
           mountPath: /data
       volumes:
       - name: model
-        {{- if .Values.embedding.persistence.enabled }}
+        {{- if and .Values.embedding.persistence.enabled (le (int .Values.embedding.replicaCount) 1) }}
         persistentVolumeClaim:
           claimName: {{ include "inference-stack.fullname" . }}-embedding-model
         {{- else }}
@@ -116,7 +116,7 @@ spec:
       - name: data
         emptyDir:
           sizeLimit: 1Gi
-{{- if .Values.embedding.persistence.enabled }}
+{{- if and .Values.embedding.persistence.enabled (le (int .Values.embedding.replicaCount) 1) }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

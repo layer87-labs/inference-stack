@@ -75,6 +75,16 @@ router:
 embedding:
   enabled: false
 
+  # Number of TEI embedding replicas. TEI is CPU-bound and forces
+  # max_batch_requests=8 per process regardless of tuning, so more capacity
+  # comes from running more independent replicas (each with its own batch
+  # queue) rather than from raising batch size within one pod. When > 1,
+  # persistence.enabled is ignored (see persistence below) — the baked-in
+  # model-init container re-copies the model on every start regardless, so
+  # a per-replica PVC is not needed and a single shared ReadWriteOnce PVC
+  # would not work across replicas anyway.
+  replicaCount: 1
+
   # tei-runtime image — TEI embedding server (BGE-M3)
   image:
     repository: tei-runtime
@@ -128,6 +138,7 @@ embedding:
 
   # Model volume — PVC keeps model across pod restarts (avoids re-copy)
   # Set enabled: false to use emptyDir (model copied from init container every start)
+  # Ignored (treated as false) when replicaCount > 1 — see replicaCount above.
   persistence:
     enabled: true
     size: "5Gi"
@@ -136,6 +147,25 @@ embedding:
   startupProbe:
     periodSeconds: 15
     failureThreshold: 40 # up to 10 min for model load
+
+  # readinessProbe hits TEI's own /health, which shares TEI's internal
+  # request queue with /v1/embeddings — under a large request burst, /health
+  # itself can queue behind the backlog and time out. A higher
+  # failureThreshold gives a legitimately-busy-but-alive pod enough runway
+  # to drain its backlog before Kubernetes pulls it out of Service
+  # Endpoints (which would make things worse, not better, since it reduces
+  # available capacity right when it's needed most). livenessProbe is left
+  # tighter/unchanged deliberately: restarting a busy-but-alive pod destroys
+  # its in-progress work and makes the backlog worse, so only a genuinely
+  # wedged process (not just a busy one) should trigger it.
+  readinessProbe:
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 9 # ~90s tolerance for transient queue backlog
+  livenessProbe:
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
 
   # Pod-level security context
   podSecurityContext:
@@ -165,6 +195,10 @@ embedding:
 # Router rewrites /v1/rerank → /rerank before forwarding to this backend.
 reranker:
   enabled: false
+
+  # See embedding.replicaCount above for the same reasoning (CPU-bound TEI,
+  # persistence.enabled is ignored when > 1).
+  replicaCount: 1
 
   # tei-runtime image — same runtime as embedding, handles reranking via ONNX
   image:
@@ -214,6 +248,7 @@ reranker:
       memory: "8Gi"
 
   # Model volume — PVC keeps model across pod restarts (avoids re-copy)
+  # Ignored (treated as false) when replicaCount > 1 — see replicaCount above.
   persistence:
     enabled: true
     size: "4Gi"
@@ -222,6 +257,16 @@ reranker:
   startupProbe:
     periodSeconds: 15
     failureThreshold: 40 # up to 10 min for ONNX model load + ORT warmup
+
+  # See embedding.readinessProbe/livenessProbe above for the reasoning.
+  readinessProbe:
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 9
+  livenessProbe:
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
 
   # Pod-level security context
   podSecurityContext:

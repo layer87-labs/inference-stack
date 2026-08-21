@@ -14,6 +14,19 @@ type Backend struct {
 	Models  []string // models this backend serves; used for /v1/models aggregation
 	Enabled bool
 	Timeout time.Duration
+
+	// MaxConcurrent bounds how many requests the router forwards to this
+	// backend at once. Requests beyond the bound are fast-rejected with 503
+	// + Retry-After instead of queuing indefinitely in the router — callers
+	// are expected to back off and retry (e.g. via their own message-queue
+	// redelivery) rather than pile up open HTTP connections here. This keeps
+	// one noisy consumer from starving every other consumer of a shared
+	// backend and, critically, keeps the backend's own /health endpoint
+	// (which shares the same request queue on CPU-bound TEI backends)
+	// responsive enough that Kubernetes doesn't pull it out of rotation
+	// under load. 0 or negative disables the limit (unbounded passthrough,
+	// the previous behavior).
+	MaxConcurrent int
 }
 
 // Config holds all runtime configuration for the inference router.
@@ -57,6 +70,11 @@ func Load() (*Config, error) {
 			Models:  []string{"BAAI/bge-m3"},
 			Enabled: envBool("EMBEDDING_ENABLED", false),
 			Timeout: envDuration("EMBEDDING_TIMEOUT", 60*time.Second),
+			// TEI forces max_batch_requests=8 for this model server-side
+			// (a hard backend cap, not tunable here). 20 gives the backend's
+			// own batching headroom above that cap to keep pipelining
+			// requests without unbounded queuing in front of it.
+			MaxConcurrent: envInt("EMBEDDING_MAX_CONCURRENT", 20),
 		},
 		Reranker: Backend{
 			Name:    "reranker",
@@ -64,6 +82,8 @@ func Load() (*Config, error) {
 			Models:  []string{"BAAI/bge-reranker-v2-m3"},
 			Enabled: envBool("RERANKER_ENABLED", false),
 			Timeout: envDuration("RERANKER_TIMEOUT", 30*time.Second),
+			// Same reasoning as embedding's MaxConcurrent above.
+			MaxConcurrent: envInt("RERANKER_MAX_CONCURRENT", 20),
 		},
 		Whisper: Backend{
 			Name:    "whisper",
@@ -71,6 +91,10 @@ func Load() (*Config, error) {
 			Models:  []string{"whisper-large-v3-turbo", "whisper-large-v3", "whisper-medium", "whisper-small"},
 			Enabled: envBool("WHISPER_ENABLED", false),
 			Timeout: envDuration("WHISPER_TIMEOUT", 300*time.Second),
+			// Whisper transcription is long-running per request (5min
+			// timeout) and heavier per-request than embedding/reranking, so
+			// a much lower concurrency bound is appropriate.
+			MaxConcurrent: envInt("WHISPER_MAX_CONCURRENT", 8),
 		},
 	}
 
@@ -148,6 +172,18 @@ func envInt64(key string, def int64) int64 {
 		return def
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
 	if err != nil {
 		return def
 	}
