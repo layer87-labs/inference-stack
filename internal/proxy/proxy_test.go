@@ -40,7 +40,7 @@ func jsonOK(body string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, body)
+		_, _ = io.WriteString(w, body)
 	}
 }
 
@@ -442,7 +442,7 @@ func TestRouterHealthEndpoint(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -471,7 +471,7 @@ func TestMaxConcurrent_FastReject(t *testing.T) {
 			<-release
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, `{"object":"list","data":[]}`)
+			_, _ = io.WriteString(w, `{"object":"list","data":[]}`)
 		},
 	})
 

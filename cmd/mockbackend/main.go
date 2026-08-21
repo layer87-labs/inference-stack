@@ -57,14 +57,14 @@ func main() {
 func registerHealth(mux *http.ServeMux) {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // ── Embedding ─────────────────────────────────────────────────────────────────
@@ -161,7 +161,7 @@ func registerWhisper(mux *http.ServeMux, log *zap.Logger) {
 		format := r.FormValue("response_format")
 		if format == "text" {
 			w.Header().Set("Content-Type", "text/plain")
-			fmt.Fprint(w, "Hello from mock whisper.")
+			_, _ = fmt.Fprint(w, "Hello from mock whisper.")
 			return
 		}
 		writeJSON(w, 200, map[string]any{

@@ -64,7 +64,7 @@ func (c *Checker) check() {
 		resp, err := client.Get(b.BaseURL + "/health")
 		healthy := err == nil && resp != nil && resp.StatusCode < 400
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 
 		c.mu.Lock()
@@ -128,5 +128,5 @@ func (c *Checker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(s)
+	_ = json.NewEncoder(w).Encode(s)
 }
