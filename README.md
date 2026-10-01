@@ -101,6 +101,29 @@ All images are published to `ghcr.io/layer87-labs/`:
 
 All images run as non-root with no privilege escalation.
 
+### Verify image signatures
+
+Images built by the release workflows are signed with
+[cosign](https://github.com/sigstore/cosign) keyless via GitHub OIDC. Verify by
+digest against the exact workflow identity:
+
+```bash
+IMAGE=ghcr.io/layer87-labs/inference-router
+DIGEST=$(docker buildx imagetools inspect "$IMAGE:<version>" --format '{{json .Manifest}}' | jq -r .digest)
+
+cosign verify \
+  --certificate-identity 'https://github.com/layer87-labs/inference-stack/.github/workflows/release.yml@refs/heads/main' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  "$IMAGE@$DIGEST"
+```
+
+`release.yml` signs `inference-router`, `tei-base` and `tei-runtime`.
+`release-models.yml` signs `tei-model-init`, `tei-reranker-model-init` and
+`whisper`; for those, use the identity
+`https://github.com/layer87-labs/inference-stack/.github/workflows/release-models.yml@refs/heads/main`
+(for manual runs, the ref is the branch the workflow was started from).
+Images published before signing was added are unsigned.
+
 ## Build
 
 ```bash

@@ -19,6 +19,7 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write  # cosign keyless OIDC signing
 
 env:
   REGISTRY: ghcr.io/layer87-labs
@@ -54,6 +55,12 @@ jobs:
           docker push ${{ env.REGISTRY }}/tei-model-init:${{ env.MODEL_TAG }}
           docker push ${{ env.REGISTRY }}/tei-model-init:latest
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless via OIDC, by digest)
+        run: scripts/sign-image.sh "${{ env.REGISTRY }}/tei-model-init:${{ env.MODEL_TAG }}"
+
   reranker-model:
     if: >
       github.event_name == 'push' ||
@@ -84,6 +91,12 @@ jobs:
             .
           docker push ${{ env.REGISTRY }}/tei-reranker-model-init:${{ env.MODEL_TAG }}
           docker push ${{ env.REGISTRY }}/tei-reranker-model-init:latest
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless via OIDC, by digest)
+        run: scripts/sign-image.sh "${{ env.REGISTRY }}/tei-reranker-model-init:${{ env.MODEL_TAG }}"
 
   whisper-model:
     if: >
@@ -116,3 +129,9 @@ jobs:
             .
           docker push ${{ env.REGISTRY }}/whisper:${{ env.MODEL_TAG }}
           docker push ${{ env.REGISTRY }}/whisper:latest
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless via OIDC, by digest)
+        run: scripts/sign-image.sh "${{ env.REGISTRY }}/whisper:${{ env.MODEL_TAG }}"

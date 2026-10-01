@@ -9,6 +9,7 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write  # cosign keyless OIDC signing
 
 env:
   REGISTRY: ghcr.io/layer87-labs
@@ -64,6 +65,18 @@ jobs:
         run: |
           make docker/tei-runtime VERSION=${{ env.VERSION }}
           docker push ${{ env.REGISTRY }}/tei-runtime:${{ env.VERSION }}
+
+      # ── Sign images (keyless cosign via GitHub OIDC, by digest) ─────────
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign code images
+        run: |
+          scripts/sign-image.sh \
+            "${{ env.REGISTRY }}/inference-router:${{ env.VERSION }}" \
+            "${{ env.REGISTRY }}/tei-base:${{ env.VERSION }}" \
+            "${{ env.REGISTRY }}/tei-runtime:${{ env.VERSION }}"
 
       # ── Helm chart (OCI → ghcr.io) ───────────────────────────────────────
 
