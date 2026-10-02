@@ -8,3 +8,4 @@ vendor/
 .env.*
 deploy/helm/charts/
 /mockbackend
+__pycache__/

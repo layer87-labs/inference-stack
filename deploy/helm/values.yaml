@@ -193,6 +193,27 @@ embedding:
   imagePullSecrets: []
   nodeSelector: {}
   tolerations: []
+  # Optional scheduling rules; empty = scheduler default. Example: prefer
+  # spreading replicas over nodes with a soft anti-affinity
+  #   affinity:
+  #     podAntiAffinity:
+  #       preferredDuringSchedulingIgnoredDuringExecution:
+  #       - weight: 100
+  #         podAffinityTerm:
+  #           topologyKey: kubernetes.io/hostname
+  #           labelSelector:
+  #             matchLabels:
+  #               app.kubernetes.io/component: embedding
+  affinity: {}
+  # Example: spread replicas over nodes, but never block scheduling
+  #   topologySpreadConstraints:
+  #   - maxSkew: 1
+  #     topologyKey: kubernetes.io/hostname
+  #     whenUnsatisfiable: ScheduleAnyway
+  #     labelSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/component: embedding
+  topologySpreadConstraints: []
 
 # ── Reranker — BAAI/bge-reranker-v2-m3 ───────────────────────────────────────
 # Uses TEI (Rust/ONNX via ORT backend) — same runtime image as embedding.
@@ -315,6 +336,18 @@ whisper:
   # per request. A request's own `language` field always wins.
   language: ""
 
+  # Server-side default prompt (WHISPER_INITIAL_PROMPT), empty = off. Use it for
+  # vocabulary and spelling that clients cannot send themselves (e.g. an STT
+  # integration that only sends model + language). A request's `prompt` is
+  # appended after it. Whisper uses at most ~223 tokens; longer text is cut
+  # from the front. Example: "Release notes for Kubernetes, PostgreSQL and
+  # Grafana."
+  initialPrompt: ""
+
+  # Server-side default hotwords (WHISPER_HOTWORDS), empty = off. A request's
+  # `hotwords` field replaces it. Free text, e.g. "Kubernetes Grafana Postgres".
+  hotwords: ""
+
   # CTranslate2 threads. Must match the CPU limit: CTranslate2 sizes itself by
   # the node's cores, not by the cgroup limit.
   cpuThreads: 4
@@ -368,6 +401,27 @@ whisper:
   imagePullSecrets: []
   nodeSelector: {}
   tolerations: []
+  # Optional scheduling rules; empty = scheduler default. Example: prefer
+  # spreading replicas over nodes with a soft anti-affinity
+  #   affinity:
+  #     podAntiAffinity:
+  #       preferredDuringSchedulingIgnoredDuringExecution:
+  #       - weight: 100
+  #         podAffinityTerm:
+  #           topologyKey: kubernetes.io/hostname
+  #           labelSelector:
+  #             matchLabels:
+  #               app.kubernetes.io/component: whisper
+  affinity: {}
+  # Example: spread replicas over nodes, but never block scheduling
+  #   topologySpreadConstraints:
+  #   - maxSkew: 1
+  #     topologyKey: kubernetes.io/hostname
+  #     whenUnsatisfiable: ScheduleAnyway
+  #     labelSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/component: whisper
+  topologySpreadConstraints: []
 
 # ── ServiceMonitor (Prometheus Operator) ──────────────────────────────────────
 serviceMonitor:

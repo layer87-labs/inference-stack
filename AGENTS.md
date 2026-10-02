@@ -72,7 +72,7 @@ Key details:
 
 ### Whisper (Standalone)
 
-Model is baked directly into the image at build time. No init container, no PVC needed. The image runs `deploy/whisper/server.py`, which speaks the OpenAI audio API itself (the router forwards paths unchanged). `/health` does not queue behind inference. Pin `av` (see Containerfile) — newer PyAV majors break faster-whisper.
+Model is baked directly into the image at build time. No init container, no PVC needed. The image runs `deploy/whisper/server.py`, which speaks the OpenAI audio API itself (the router forwards paths unchanged). `/health` does not queue behind inference. Pin `av` (see Containerfile) — newer PyAV majors break faster-whisper. Each request logs one JSON line (`whisper_request`, timings, RTF; never prompt/transcript text). `WHISPER_INITIAL_PROMPT` / `WHISPER_HOTWORDS` are server-side defaults (see README). Tests: `pytest deploy/whisper` (stubbed model).
 
 ### Router (Go Proxy)
 
