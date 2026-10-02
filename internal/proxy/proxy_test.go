@@ -210,6 +210,45 @@ func TestRouting_Whisper(t *testing.T) {
 	}
 }
 
+// The router must hand multipart bodies to the ASR backend byte for byte,
+// including the vocabulary fields prompt, hotwords and language.
+func TestRouting_WhisperMultipartPassthrough(t *testing.T) {
+	body := "--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\n\r\nRIFFdata\r\n" +
+		"--b\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\nde\r\n" +
+		"--b\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\nAlpha, Beta\r\n" +
+		"--b\r\nContent-Disposition: form-data; name=\"hotwords\"\r\n\r\nGamma Delta\r\n--b--\r\n"
+
+	var gotBody, gotCT string
+	backend := mockBackend(t, map[string]http.HandlerFunc{
+		"/v1/audio/transcriptions": func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			gotBody, gotCT = string(b), r.Header.Get("Content-Type")
+			jsonOK(`{"text":"ok"}`)(w, r)
+		},
+	})
+	cfg := buildConfig(
+		config.Backend{Name: "embedding"},
+		config.Backend{Name: "reranker"},
+		config.Backend{Name: "whisper", BaseURL: backend.URL, Enabled: true, Timeout: 5 * time.Second},
+	)
+	router := buildRouter(t, cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=b")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if gotBody != body {
+		t.Errorf("backend body differs from client body:\n got: %q\nwant: %q", gotBody, body)
+	}
+	if gotCT != "multipart/form-data; boundary=b" {
+		t.Errorf("Content-Type = %q, want unchanged", gotCT)
+	}
+}
+
 func TestModelsAggregation(t *testing.T) {
 	embedBackend := mockBackend(t, map[string]http.HandlerFunc{
 		"/v1/models": jsonOK(modelsJSON("BAAI/bge-m3")),

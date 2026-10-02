@@ -33,6 +33,14 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.whisper.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.whisper.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: whisper
         image: {{ include "inference-stack.image" (dict "registry" .Values.global.imageRegistry "repo" .Values.whisper.image.repository "tag" .Values.whisper.image.tag "appVersion" .Chart.AppVersion) }}
@@ -50,6 +58,10 @@ spec:
           value: {{ .Values.whisper.maxConcurrent | quote }}
         - name: WHISPER_LANGUAGE
           value: {{ .Values.whisper.language | quote }}
+        - name: WHISPER_INITIAL_PROMPT
+          value: {{ .Values.whisper.initialPrompt | quote }}
+        - name: WHISPER_HOTWORDS
+          value: {{ .Values.whisper.hotwords | quote }}
         ports:
         - name: http
           containerPort: {{ .Values.whisper.service.port }}

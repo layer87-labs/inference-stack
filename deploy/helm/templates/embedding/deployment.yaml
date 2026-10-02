@@ -46,6 +46,14 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.embedding.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.embedding.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       initContainers:
       - name: model-init
         image: {{ include "inference-stack.image" (dict "registry" .Values.global.imageRegistry "repo" .Values.embedding.modelInit.image.repository "tag" .Values.embedding.modelInit.image.tag "appVersion" .Chart.AppVersion) }}

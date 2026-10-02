@@ -192,8 +192,68 @@ Measured on CPU: ~2.0 GiB RSS peak; roughly real-time speed on 2 threads (a
 - `response_format`: `json` (default), `text`, `verbose_json`, `srt`, `vtt`.
 - Set `whisper.language` (e.g. `de`) to skip language auto-detection; a
   request's own `language` field wins.
+- Vocabulary hints, two mechanisms (both optional, both off by default):
+  - `prompt` (form field, OpenAI-compatible) becomes faster-whisper's
+    `initial_prompt`. Set a server-side default with `whisper.initialPrompt`
+    (`WHISPER_INITIAL_PROMPT`) for clients that send no prompt (e.g. an STT
+    integration that only sends `model` and `language`). A request prompt is
+    **appended** to the default (`<default> <request>`): Whisper weighs the end
+    of the prompt most, and an over-long prompt is cut from the front, so the
+    request-specific text survives. Whisper reads at most 223 tokens
+    (`max_length // 2 - 1`); faster-whisper keeps the last 223 and drops the
+    rest. The server additionally caps the combined text at 2000 characters
+    (tail kept).
+  - `hotwords` (form field, extension; free text such as
+    `Kubernetes Grafana Postgres`) is passed to faster-whisper's `hotwords`.
+    Server default: `whisper.hotwords` (`WHISPER_HOTWORDS`). A request's
+    `hotwords` **replaces** the default (no merging). faster-whisper puts the
+    hotwords in front of the previous-text prompt; it ignores them only when
+    `prefix` is set, which this server never sets, so `prompt` and `hotwords`
+    work together (checked in `faster_whisper/transcribe.py`, `get_prompt`,
+    version 1.2.1). Both count against the same 223-token window of their own.
+  - Neutral example for `whisper.initialPrompt`:
+    `Release notes for Kubernetes, PostgreSQL and Grafana.`
+  - Hints raise the odds of a spelling; they do not guarantee it. Keep them
+    short and spell terms the way they should appear.
+- Per-request log line (JSON after the prefix `whisper_request`), e.g.
+  `whisper_request {"status":"ok","audio_s":9.0,"prep_s":0.4,"infer_s":7.6,"total_s":8.1,"rtf":0.889,...}`:
+  audio duration (`audio_s`, `audio_after_vad_s`), upload, queue wait, decode +
+  VAD (`prep_s`) and inference (`infer_s`) time, real-time factor
+  (`rtf = (prep_s + infer_s) / audio_s`), model, language, `beam_size`, `vad`,
+  file size, and `prompt_chars` / `hotwords_chars` / `prompt_source`
+  (`none|default|request|both`). Prompt, hotwords and transcript text are
+  never logged.
 - `/v1/audio/translations` (to English) is exposed, but large-v3-turbo is not
   trained for translation; use a non-turbo model for that.
+
+### Scheduling (`affinity`, `topologySpreadConstraints`)
+
+`embedding` and `whisper` accept optional `affinity` and
+`topologySpreadConstraints` (empty by default, so the rendered manifests do not
+change). With `embedding.replicaCount > 1` the replicas can land on one node,
+and then the PodDisruptionBudget does not protect against a node failure.
+Example, soft spreading that never blocks scheduling:
+
+```yaml
+embedding:
+  replicaCount: 2
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/component: embedding
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: embedding
+```
 
 ## Environment Variables
 
