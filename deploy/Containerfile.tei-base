@@ -12,7 +12,7 @@
 # Used as FROM base by:
 #   Containerfile.tei-runtime
 
-ARG TEI_VERSION=cpu-1.9.3
+ARG TEI_VERSION=cpu-1.9.4
 
 # ── Stage 1: patchelf binary ──────────────────────────────────────────────────
 FROM debian:bookworm-slim AS tools

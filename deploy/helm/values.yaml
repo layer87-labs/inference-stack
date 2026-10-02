@@ -154,10 +154,12 @@ embedding:
   # failureThreshold gives a legitimately-busy-but-alive pod enough runway
   # to drain its backlog before Kubernetes pulls it out of Service
   # Endpoints (which would make things worse, not better, since it reduces
-  # available capacity right when it's needed most). livenessProbe is left
-  # tighter/unchanged deliberately: restarting a busy-but-alive pod destroys
-  # its in-progress work and makes the backlog worse, so only a genuinely
-  # wedged process (not just a busy one) should trigger it.
+  # available capacity right when it's needed most). livenessProbe uses the
+  # same /health endpoint, so it queues behind the same backlog: with a
+  # tight threshold a busy-but-alive pod gets SIGTERMed (clean exit 0, not
+  # OOM), which destroys in-progress work and makes the backlog worse. The
+  # liveness window is therefore long (~5 min); only a genuinely wedged
+  # process should be restarted.
   readinessProbe:
     periodSeconds: 10
     timeoutSeconds: 5
@@ -165,7 +167,7 @@ embedding:
   livenessProbe:
     periodSeconds: 30
     timeoutSeconds: 10
-    failureThreshold: 3
+    failureThreshold: 10 # ~5 min of consecutive failures
 
   # Pod-level security context
   podSecurityContext:
