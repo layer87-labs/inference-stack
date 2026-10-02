@@ -15,6 +15,7 @@ on:
       - "deploy/Containerfile.tei-model-init"
       - "deploy/Containerfile.tei-reranker-model-init"
       - "deploy/Containerfile.whisper"
+      - "deploy/whisper/**"
 
 permissions:
   contents: read

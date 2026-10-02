@@ -26,18 +26,6 @@
       "datasourceTemplate": "docker",
       "versioningTemplate": "loose",
       "autoReplaceStringTemplate": "ARG TEI_VERSION={{{newValue}}}"
-    },
-    {
-      "description": "Whisper upstream version in Containerfile.whisper",
-      "customType": "regex",
-      "fileMatch": ["^deploy/Containerfile\\.whisper$"],
-      "matchStrings": [
-        "ARG WHISPER_VERSION=(?<currentValue>v[\\d.]+)"
-      ],
-      "depNameTemplate": "docker.io/onerahmet/openai-whisper-asr-webservice",
-      "datasourceTemplate": "docker",
-      "versioningTemplate": "loose",
-      "autoReplaceStringTemplate": "ARG WHISPER_VERSION={{{newValue}}}"
     }
   ]
 }

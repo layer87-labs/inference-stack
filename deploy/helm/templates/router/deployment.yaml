@@ -71,6 +71,9 @@ spec:
         - name: WHISPER_URL
           value: "http://{{ include "inference-stack.fullname" . }}-whisper:{{ .Values.whisper.service.port }}"
         {{- end }}
+        {{- with .Values.router.extraEnv }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         readinessProbe:
           httpGet:
             path: /readyz

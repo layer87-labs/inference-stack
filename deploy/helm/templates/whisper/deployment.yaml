@@ -38,30 +38,38 @@ spec:
         image: {{ include "inference-stack.image" (dict "registry" .Values.global.imageRegistry "repo" .Values.whisper.image.repository "tag" .Values.whisper.image.tag "appVersion" .Chart.AppVersion) }}
         imagePullPolicy: {{ .Values.whisper.image.pullPolicy }}
         env:
-        - name: ASR_MODEL
-          value: {{ .Values.whisper.modelName | quote }}
-        - name: ASR_ENGINE
-          value: "faster_whisper"
+        - name: MODEL_NAME
+          value: "whisper-{{ .Values.whisper.modelName }}"
+        - name: PORT
+          value: {{ .Values.whisper.service.port | quote }}
+        - name: CPU_THREADS
+          value: {{ .Values.whisper.cpuThreads | quote }}
+        - name: MAX_UPLOAD_MB
+          value: {{ .Values.whisper.maxUploadMB | quote }}
+        - name: MAX_CONCURRENT
+          value: {{ .Values.whisper.maxConcurrent | quote }}
+        - name: WHISPER_LANGUAGE
+          value: {{ .Values.whisper.language | quote }}
         ports:
         - name: http
           containerPort: {{ .Values.whisper.service.port }}
           protocol: TCP
+        # /health is answered independently of inference (see
+        # deploy/whisper/server.py), so a long transcription cannot fail it.
         readinessProbe:
           httpGet:
-            path: /docs
+            path: /health
             port: http
-          initialDelaySeconds: 30
           periodSeconds: 15
           timeoutSeconds: 5
           failureThreshold: 6
         livenessProbe:
           httpGet:
-            path: /docs
+            path: /health
             port: http
-          initialDelaySeconds: 60
           periodSeconds: 30
           timeoutSeconds: 10
-          failureThreshold: 3
+          failureThreshold: 6
         {{- if .Values.whisper.startupProbe.enabled }}
         startupProbe:
           httpGet:

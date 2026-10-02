@@ -1,71 +1,60 @@
 # syntax=docker/dockerfile:1
 #
-# Containerfile.whisper — Whisper ASR HTTP server, hardened
+# Containerfile.whisper — Whisper ASR HTTP server (CPU), model baked in
 #
-# Exposes an OpenAI-compatible /v1/audio/transcriptions endpoint.
-# Uses faster-whisper (CTranslate2 backend) for CPU-efficient inference.
+# OpenAI-compatible POST /v1/audio/transcriptions (and /v1/audio/translations)
+# served by deploy/whisper/server.py on top of faster-whisper (CTranslate2).
 #
-# Model is baked into the image at build time (no init container needed —
-# Whisper large-v3-turbo is ~800 MB, small enough to keep in a single image).
+# Why a purpose-built server instead of an off-the-shelf ASR web service:
+#   - the router forwards OpenAI-style paths unchanged, so the backend must
+#     speak that API itself;
+#   - /health is served independently of inference, so a probe never queues
+#     behind a long transcription.
 #
-# Hardened:
-#   1. execstack cleared on libctranslate2*.so (fixes mprotect PROT_EXEC crash)
-#   2. Model baked into /home/whisper/.cache — no cold-start download
-#   3. Non-root (uid 1000)
-#   4. HF_HUB_OFFLINE=0 — huggingface_hub xet cache requires live API validation
-#      even with a fully-populated cache; offline mode breaks model loading.
+# Model is baked into the image (large-v3-turbo, ~1.6 GB) and loaded from a
+# local path — the container runs fully offline and needs no PVC.
+#
+# Hardened: non-root (uid 1000), no network access needed at runtime,
+# ctranslate2 4.x ships a non-executable stack, so the default seccomp
+# profile and allowPrivilegeEscalation=false work.
 
-ARG WHISPER_VERSION=v1.9.1
+FROM python:3.12-slim
+
 ARG WHISPER_MODEL=large-v3-turbo
 
-# ── Stage 1: patchelf binary ──────────────────────────────────────────────────
-FROM debian:bookworm-slim AS tools
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends patchelf && \
-    rm -rf /var/lib/apt/lists/*
+# av is pinned: faster-whisper 1.2.x breaks with newer PyAV major versions
+# ("open() got an unexpected keyword argument 'metadata_errors'").
+RUN pip install --no-cache-dir \
+    "faster-whisper==1.2.1" \
+    "av==16.1.0" \
+    "fastapi>=0.110.0" \
+    "uvicorn[standard]>=0.27.0" \
+    "python-multipart>=0.0.9"
 
-# ── Stage 2: Whisper runtime ──────────────────────────────────────────────────
-FROM docker.io/onerahmet/openai-whisper-asr-webservice:${WHISPER_VERSION}
-
-ARG WHISPER_MODEL
-
-USER root
-
-ENV ASR_MODEL=${WHISPER_MODEL}
-ENV ASR_ENGINE=faster_whisper
-# Upstream image hardcodes port 9000; UVICORN_PORT env is ignored by uvicorn.
-# We accept the default — the chart must map service port 9000.
-ENV UVICORN_PORT=9000
-
-# Use venv python for everything.
-ENV PATH="/app/.venv/bin:$PATH"
-
-# Clear executable-stack ELF flag on ctranslate2 shared libraries.
-# Required for securityContext.allowPrivilegeEscalation=false.
-COPY --from=tools /usr/bin/patchelf /usr/bin/patchelf
-RUN find /app/.venv -name 'libctranslate2*' -exec patchelf --clear-execstack {} \; && \
-    rm -f /usr/bin/patchelf
-
-# Create non-root user before downloading the model.
 RUN groupadd -g 1000 whisper && \
-    useradd -u 1000 -g whisper -m -s /bin/bash whisper
+    useradd -u 1000 -g whisper -m -s /bin/bash whisper && \
+    mkdir -p /opt/model && chown whisper:whisper /opt/model
 
-# Download model at build time into the whisper user's home cache.
-RUN HF_HUB_OFFLINE=0 HUGGINGFACE_OFFLINE=0 \
-    HOME=/home/whisper \
-    python -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL}', device='cpu', compute_type='int8')"
-
-# Fix ownership (model was downloaded as root into /home/whisper/.cache).
-RUN chown -R whisper:whisper /home/whisper /app
-
-# Don't enforce HF offline mode: huggingface_hub xet cache (used by
-# mobiuslabsgmbh/faster-whisper-large-v3-turbo) requires a live API call
-# even when the cache is fully populated. Model won't be re-downloaded
-# since it's already cached.
-ENV HF_HUB_OFFLINE=0
-ENV HUGGINGFACE_OFFLINE=0
-
+# Bake the model (needs network at build time only).
 USER 1000
+RUN python -c "from faster_whisper.utils import download_model; download_model('${WHISPER_MODEL}', output_dir='/opt/model')" && \
+    rm -rf /home/whisper/.cache
+
+WORKDIR /app
+COPY --chown=1000:1000 deploy/whisper/server.py /app/server.py
+
+ENV MODEL_PATH=/opt/model \
+    MODEL_NAME=whisper-${WHISPER_MODEL} \
+    COMPUTE_TYPE=int8 \
+    HF_HUB_OFFLINE=1 \
+    PORT=9000
+
+EXPOSE 9000
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=8 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')" || exit 1
+
+CMD ["python", "/app/server.py"]
 
 LABEL org.opencontainers.image.source="https://github.com/layer87-labs/inference-stack"
-LABEL org.opencontainers.image.description="Whisper ASR HTTP server (CPU) — model baked in, hardened"
+LABEL org.opencontainers.image.description="Whisper ASR HTTP server (CPU) — OpenAI-compatible /v1/audio/transcriptions, model baked in"

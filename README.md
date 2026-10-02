@@ -79,7 +79,12 @@ curl http://localhost:8080/v1/models
 
 ### Whisper (Standalone)
 
-Model baked into image at build time. No init container or PVC needed.
+Model baked into image at build time. No init container or PVC needed. The
+image runs `deploy/whisper/server.py` (faster-whisper behind a small FastAPI
+app) which implements `POST /v1/audio/transcriptions` and
+`/v1/audio/translations` natively, so the router forwards requests unchanged.
+`/health` is answered independently of inference and stays responsive while a
+transcription is running.
 
 ### Router (Go Proxy)
 
@@ -97,7 +102,7 @@ All images are published to `ghcr.io/layer87-labs/`:
 | `tei-model-init`      | BGE-M3 model baked, copies to volume   |
 | `reranker-model-init` | BGE-reranker-v2-m3 baked               |
 | `reranker-server`     | FlagEmbedding HTTP server              |
-| `whisper`             | Whisper ASR with model baked in        |
+| `whisper`             | Whisper ASR server, model baked in     |
 
 All images run as non-root with no privilege escalation.
 
@@ -163,6 +168,24 @@ Prometheus metrics on `:9090/metrics`:
 | ------------ | ---------- | --------------- |
 | 512          | 2-4Gi      | **CPU default** |
 | 1024         | 4-6Gi      | Larger context  |
+
+### Whisper (faster-whisper + large-v3-turbo, int8)
+
+Measured on CPU: ~2.0 GiB RSS peak; roughly real-time speed on 2 threads (a
+3.7 min recording took 3.3 min), faster with more threads.
+
+- `whisper.cpuThreads` must match the CPU limit (CTranslate2 sizes itself by
+  the node's cores, not by the cgroup limit).
+- Transcriptions run one at a time; further requests queue in the server. Keep
+  the router's `WHISPER_TIMEOUT` (default `300s`) above queue time + runtime,
+  e.g. via `router.extraEnv`.
+- Upload limit: `whisper.maxUploadMB` (default 100). Formats: anything FFmpeg
+  decodes (wav, mp3, m4a, ogg, flac, webm, mp4, ...).
+- `response_format`: `json` (default), `text`, `verbose_json`, `srt`, `vtt`.
+- Set `whisper.language` (e.g. `de`) to skip language auto-detection; a
+  request's own `language` field wins.
+- `/v1/audio/translations` (to English) is exposed, but large-v3-turbo is not
+  trained for translation; use a non-turbo model for that.
 
 ## Environment Variables
 
