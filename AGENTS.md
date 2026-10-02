@@ -40,7 +40,9 @@ deploy/
   Containerfile.tei-model-init  Embedding model init container (bakes BGE-M3)
   Containerfile.reranker-model-init  Reranker model init container
   Containerfile.reranker-server      FlagEmbedding FastAPI server (/v1/rerank)
-  Containerfile.whisper         Whisper ASR with model baked in
+  Containerfile.whisper         Whisper ASR server (deploy/whisper/server.py) with model baked in
+  whisper/
+    server.py                   faster-whisper FastAPI server (/v1/audio/transcriptions)
   reranker/
     server.py                   FlagEmbedding FastAPI server
   helm/                         Helm chart (Chart.yaml, values.yaml, templates/)
@@ -70,7 +72,7 @@ Key details:
 
 ### Whisper (Standalone)
 
-Model is baked directly into the image at build time. No init container, no PVC needed.
+Model is baked directly into the image at build time. No init container, no PVC needed. The image runs `deploy/whisper/server.py`, which speaks the OpenAI audio API itself (the router forwards paths unchanged). `/health` does not queue behind inference. Pin `av` (see Containerfile) — newer PyAV majors break faster-whisper.
 
 ### Router (Go Proxy)
 

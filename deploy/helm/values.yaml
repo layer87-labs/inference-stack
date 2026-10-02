@@ -49,6 +49,10 @@ router:
 
   healthCheckInterval: "15s"
 
+  # Extra environment variables for the router, e.g. to tune per-backend
+  # timeouts (WHISPER_TIMEOUT, ROUTER_WRITE_TIMEOUT, ...). List of EnvVar.
+  extraEnv: []
+
   # Pod-level security context
   podSecurityContext:
     runAsNonRoot: true
@@ -292,34 +296,54 @@ reranker:
   tolerations: []
 
 # ── Whisper — OpenAI-compatible ASR ───────────────────────────────────────────
+# faster-whisper (CTranslate2, int8) behind deploy/whisper/server.py.
+# POST /v1/audio/transcriptions and /v1/audio/translations; /health is
+# answered independently of inference. The model is baked into the image, so
+# no PVC or init container is needed.
 whisper:
   enabled: false
 
-  # Whisper image has model baked in — versioned as <model>-<YYYY.MM>
+  # Image has the model baked in — versioned as <model>-<YYYY.MM>
   image:
     repository: whisper
-    tag: "large-v3-turbo-2026.06"
+    tag: "large-v3-turbo-2026.10"
     pullPolicy: IfNotPresent
 
   modelName: "large-v3-turbo"
 
+  # Default transcription language (ISO-639-1, e.g. "de"). Empty = auto-detect
+  # per request. A request's own `language` field always wins.
+  language: ""
+
+  # CTranslate2 threads. Must match the CPU limit: CTranslate2 sizes itself by
+  # the node's cores, not by the cgroup limit.
+  cpuThreads: 4
+
+  # Upload size limit per request (MB). Must stay below any body-size limit of
+  # the ingress/gateway in front of the router.
+  maxUploadMB: 100
+
+  # Transcriptions run one at a time (CPU-bound); further requests queue in
+  # the server. Keep the router's WHISPER_TIMEOUT above queue time + runtime.
+  maxConcurrent: 1
+
   service:
     port: 9000
 
+  # Measured with large-v3-turbo / int8: ~2.0 GiB RSS peak; ~1x real-time on
+  # 2 threads (a 3.7 min recording took 3.3 min), faster with more threads.
   resources:
     requests:
-      cpu: "500m"
-      memory: "2Gi"
-    limits:
       cpu: "2000m"
+      memory: "3Gi"
+    limits:
+      cpu: "4000m"
       memory: "4Gi"
 
-  # Pod-level security context. ctranslate2.so requires Unconfined seccomp
-  # (see container securityContext below), so the pod default matches.
   podSecurityContext:
     runAsNonRoot: true
     seccompProfile:
-      type: Unconfined
+      type: RuntimeDefault
 
   securityContext:
     runAsNonRoot: true
@@ -329,20 +353,17 @@ whisper:
     readOnlyRootFilesystem: false
     capabilities:
       drop: [ALL]
-    # ctranslate2.so (faster-whisper) uses mprotect(PROT_EXEC) — needs
-    # relaxed seccomp until ctranslate2 is rebuilt without execstack.
     seccompProfile:
-      type: Unconfined
+      type: RuntimeDefault
 
-  # Startup probe — whisper loads the model on first request and may
-  # need 30-60s to warm up on CPU.
+  # Startup probe — model load takes ~10-30s from local disk.
   startupProbe:
     enabled: true
     httpGet:
-      path: /docs
+      path: /health
       port: http
-    periodSeconds: 15
-    failureThreshold: 40
+    periodSeconds: 10
+    failureThreshold: 30
 
   imagePullSecrets: []
   nodeSelector: {}

@@ -14,7 +14,6 @@ LDSYMS          ?= \
 # TEI and Whisper versions — read from Containerfile ARGs by default.
 # Override on the command line if needed: make docker/tei-runtime TEI_VERSION=cpu-1.9.4
 TEI_VERSION     ?= $(shell grep '^ARG TEI_VERSION=' deploy/Containerfile.tei-base | sed 's/ARG TEI_VERSION=//')
-WHISPER_VERSION ?= $(shell grep '^ARG WHISPER_VERSION=' deploy/Containerfile.whisper | sed 's/ARG WHISPER_VERSION=//')
 WHISPER_MODEL   ?= $(shell grep '^ARG WHISPER_MODEL=' deploy/Containerfile.whisper | sed 's/ARG WHISPER_MODEL=//')
 
 .PHONY: build build/router build/mockbackend tidy lint test test-local \
@@ -114,7 +113,6 @@ docker/tei-reranker-model-init:
 docker/whisper:
 	docker build \
 	  -f deploy/Containerfile.whisper \
-	  --build-arg WHISPER_VERSION=$(WHISPER_VERSION) \
 	  --build-arg WHISPER_MODEL=$(WHISPER_MODEL) \
 	  -t $(REGISTRY)/whisper:$(VERSION) \
 	  .
