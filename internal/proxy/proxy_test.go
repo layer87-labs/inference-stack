@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -578,5 +579,93 @@ func TestUnknownPath_404(t *testing.T) {
 	}
 	if errResp["error"] != "not_found" {
 		t.Errorf("error = %q, want not_found", errResp["error"])
+	}
+}
+
+func TestEmbeddings_AdvertisedModelIDIsStripped(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		wantBody string // JSON, compared after normalisation
+	}{
+		{"advertised id", `{"model":"BAAI/bge-m3","input":["a","b"]}`, `{"input":["a","b"]}`},
+		{"no model", `{"input":"a"}`, `{"input":"a"}`},
+		{"backend path", `{"model":"/model","input":"a"}`, `{"model":"/model","input":"a"}`},
+		{"other id kept", `{"model":"other","input":"a"}`, `{"model":"other","input":"a"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			backend := mockBackend(t, map[string]http.HandlerFunc{
+				"/v1/embeddings": func(w http.ResponseWriter, r *http.Request) {
+					b, _ := io.ReadAll(r.Body)
+					got = string(b)
+					if int64(len(b)) != r.ContentLength {
+						t.Errorf("Content-Length = %d, body = %d bytes", r.ContentLength, len(b))
+					}
+					jsonOK(`{"object":"list","data":[]}`)(w, r)
+				},
+			})
+			cfg := buildConfig(
+				config.Backend{Name: "embedding", BaseURL: backend.URL, Enabled: true, Timeout: 5 * time.Second, Models: []string{"BAAI/bge-m3"}},
+				config.Backend{Name: "reranker"},
+				config.Backend{Name: "whisper"},
+			)
+			router := buildRouter(t, cfg)
+			req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+			var gotM, wantM map[string]any
+			if err := json.Unmarshal([]byte(got), &gotM); err != nil {
+				t.Fatalf("backend got invalid JSON %q: %v", got, err)
+			}
+			_ = json.Unmarshal([]byte(tc.wantBody), &wantM)
+			if !reflect.DeepEqual(gotM, wantM) {
+				t.Errorf("backend body = %s, want %s", got, tc.wantBody)
+			}
+		})
+	}
+}
+
+func TestModels_EmbeddingLimits(t *testing.T) {
+	embedBackend := mockBackend(t, map[string]http.HandlerFunc{
+		"/v1/models": jsonOK(modelsJSON("/model")), // TEI reports its internal path
+		"/info":      jsonOK(`{"max_batch_tokens":4096,"max_client_batch_size":32,"max_input_length":8192}`),
+	})
+	cfg := buildConfig(
+		config.Backend{Name: "embedding", BaseURL: embedBackend.URL, Enabled: true, Timeout: 5 * time.Second, Models: []string{"BAAI/bge-m3"}},
+		config.Backend{Name: "reranker"},
+		config.Backend{Name: "whisper"},
+	)
+	router := buildRouter(t, cfg)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var resp struct {
+		Data []struct {
+			ID     string `json:"id"`
+			Limits struct {
+				MaxBatchTokens     int `json:"max_batch_tokens"`
+				MaxClientBatchSize int `json:"max_client_batch_size"`
+				MaxInputLength     int `json:"max_input_length"`
+			} `json:"limits"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "BAAI/bge-m3" {
+		t.Fatalf("models = %+v, want one entry BAAI/bge-m3", resp.Data)
+	}
+	l := resp.Data[0].Limits
+	if l.MaxBatchTokens != 4096 || l.MaxClientBatchSize != 32 || l.MaxInputLength != 8192 {
+		t.Errorf("limits = %+v, want 4096/32/8192", l)
 	}
 }
