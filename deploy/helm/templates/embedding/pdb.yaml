@@ -1,0 +1,16 @@
+{{- if and .Values.embedding.enabled (gt (int .Values.embedding.replicaCount) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "inference-stack.fullname" . }}-embedding
+  labels:
+    {{- include "inference-stack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: embedding
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "inference-stack.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: embedding
+{{- end }}
