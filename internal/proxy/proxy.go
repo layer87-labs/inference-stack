@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -120,6 +121,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.handleModels(w, req)
 
 	case strings.HasPrefix(path, "/v1/embeddings") || path == "/embed" || path == "/embed_sparse":
+		if strings.HasPrefix(path, "/v1/embeddings") {
+			r.stripAdvertisedModel(req, r.cfg.Embedding)
+		}
 		r.dispatch(w, req, r.cfg.Embedding, "embedding")
 
 	case strings.HasPrefix(path, "/rerank") || strings.HasPrefix(path, "/v1/rerank"):
@@ -219,10 +223,95 @@ func (r *Router) dispatch(w http.ResponseWriter, req *http.Request, b config.Bac
 
 // modelObj mirrors the OpenAI /v1/models entry shape.
 type modelObj struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID      string       `json:"id"`
+	Object  string       `json:"object"`
+	Created int64        `json:"created"`
+	OwnedBy string       `json:"owned_by"`
+	Limits  *modelLimits `json:"limits,omitempty"`
+}
+
+// modelLimits are the request-size limits of the running backend, read from
+// its /info endpoint so clients can size batches without trial and error.
+type modelLimits struct {
+	MaxBatchTokens     int `json:"max_batch_tokens,omitempty"`      // tokens per forward batch
+	MaxClientBatchSize int `json:"max_client_batch_size,omitempty"` // inputs per request
+	MaxInputLength     int `json:"max_input_length,omitempty"`      // tokens per single input
+}
+
+// backendLimits asks a TEI backend for its limits. It returns nil when the
+// backend has no /info endpoint or reports nothing usable.
+func backendLimits(client *http.Client, b config.Backend) *modelLimits {
+	if b.Name != "embedding" && b.Name != "reranker" {
+		return nil
+	}
+	resp, err := client.Get(b.BaseURL + "/info")
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var info struct {
+		MaxBatchTokens     int `json:"max_batch_tokens"`
+		MaxClientBatchSize int `json:"max_client_batch_size"`
+		MaxInputLength     int `json:"max_input_length"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&info); err != nil {
+		return nil
+	}
+	l := &modelLimits{
+		MaxBatchTokens:     info.MaxBatchTokens,
+		MaxClientBatchSize: info.MaxClientBatchSize,
+		MaxInputLength:     info.MaxInputLength,
+	}
+	if *l == (modelLimits{}) {
+		return nil
+	}
+	return l
+}
+
+// stripAdvertisedModel removes the "model" field from a JSON request body
+// when it names one of the ids this backend advertises on /v1/models.
+// TEI serves exactly one model and rejects ids other than its internal path
+// (logging a warning on every call before falling back); an absent field is
+// the form it accepts, so clients can use the advertised id as-is.
+func (r *Router) stripAdvertisedModel(req *http.Request, b config.Backend) {
+	if req.Body == nil || req.Method != http.MethodPost ||
+		!strings.HasPrefix(req.Header.Get("Content-Type"), "application/json") {
+		return
+	}
+	body, err := io.ReadAll(req.Body)
+	_ = req.Body.Close()
+	setBody := func(data []byte) {
+		req.Body = io.NopCloser(bytes.NewReader(data))
+		req.ContentLength = int64(len(data))
+		req.Header.Set("Content-Length", strconv.Itoa(len(data)))
+	}
+	if err != nil {
+		setBody(body)
+		return
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) != nil {
+		setBody(body)
+		return
+	}
+	var model string
+	if raw, ok := fields["model"]; !ok || json.Unmarshal(raw, &model) != nil {
+		setBody(body)
+		return
+	}
+	for _, m := range b.Models {
+		if model == m {
+			delete(fields, "model")
+			if out, err := json.Marshal(fields); err == nil {
+				setBody(out)
+				return
+			}
+		}
+	}
+	setBody(body)
 }
 
 type modelsResp struct {
@@ -259,8 +348,12 @@ func (r *Router) handleModels(w http.ResponseWriter, req *http.Request) {
 
 		valid := r.validateModels(b, upstreamResp.Data)
 		if valid == nil {
-			models = append(models, r.staticModels(b)...)
-			continue
+			valid = r.staticModels(b)
+		}
+		if limits := backendLimits(client, b); limits != nil {
+			for i := range valid {
+				valid[i].Limits = limits
+			}
 		}
 		models = append(models, valid...)
 	}

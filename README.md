@@ -62,6 +62,14 @@ curl http://localhost:8080/v1/audio/transcriptions \
 curl http://localhost:8080/v1/models
 ```
 
+`/v1/models` also reports the request limits of the embedding and reranker
+backends (`limits.max_batch_tokens`, `limits.max_client_batch_size`,
+`limits.max_input_length`), read from the running backend, so clients can size
+batches without trial and error. The model id it advertises
+(`BAAI/bge-m3`) can be sent back as `model` on `/v1/embeddings`; the router
+strips it before forwarding, because TEI only accepts its internal model path
+or no model at all.
+
 ## Architecture
 
 ### Init Container Pattern (Embedding + Reranker)
