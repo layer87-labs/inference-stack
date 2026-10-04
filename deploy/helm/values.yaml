@@ -348,6 +348,16 @@ whisper:
   # `hotwords` field replaces it. Free text, e.g. "Kubernetes Grafana Postgres".
   hotwords: ""
 
+  # Condition each 30 s window on the previous text (WHISPER_CONDITION_ON_PREVIOUS_TEXT).
+  # Off by default: it lets a repetition loop carry on through long audio.
+  conditionOnPreviousText: false
+
+  # Audio longer than this (seconds) is transcribed with faster-whisper's
+  # BatchedInferencePipeline (VAD-cut chunks decoded independently, in batches
+  # of batchSize). Shorter audio uses the regular sequential decoder.
+  batchThresholdSeconds: 35
+  batchSize: 8
+
   # CTranslate2 threads. Must match the CPU limit: CTranslate2 sizes itself by
   # the node's cores, not by the cgroup limit.
   cpuThreads: 4

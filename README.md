@@ -215,11 +215,33 @@ Measured on CPU: ~2.0 GiB RSS peak; roughly real-time speed on 2 threads (a
     `Release notes for Kubernetes, PostgreSQL and Grafana.`
   - Hints raise the odds of a spelling; they do not guarantee it. Keep them
     short and spell terms the way they should appear.
+- Repetition loops on long audio: the sequential decoder conditions every
+  window on the previous text and can get stuck repeating itself. The server
+  therefore (1) keeps `condition_on_previous_text` off by default
+  (`whisper.conditionOnPreviousText`), (2) sends audio longer than
+  `whisper.batchThresholdSeconds` (default 35 s, `WHISPER_BATCH_THRESHOLD_S`)
+  through faster-whisper's `BatchedInferencePipeline` (VAD-cut chunks decoded
+  independently, `whisper.batchSize` = 8, `WHISPER_BATCH_SIZE`), and (3) uses
+  faster-whisper's temperature fallback (0.0, 0.2, ... 1.0 with its default
+  compression-ratio, log-prob and no-speech thresholds) on the sequential
+  path. The batched path always uses VAD and only the first temperature (the
+  library does not fall back there). A request's explicit `temperature` form
+  field (including `0`) is used as given, without fallback; clients that always
+  send `temperature=0` therefore get no fallback on the sequential path.
+  Measured locally (FLEURS de, int8, 4 threads, beam 1, VAD): three 55-88 s
+  clips WER 3.1 % instead of 42 % (one clip looped to 256 instead of 120
+  words) and 56 s of audio in 17.8 s instead of 27.2 s; 40 single clips
+  5.6 % vs 5.2 % (noise); no speed difference on short clips.
+- Warmup: after loading the model the server runs a 2 s synthetic clip through
+  VAD and decoder (`WHISPER_WARMUP`, default `true`) so the first real request
+  does not pay the initialisation cost. `/health` returns 503 until model and
+  warmup are done; a failed warmup is logged and does not block startup.
 - Per-request log line (JSON after the prefix `whisper_request`), e.g.
-  `whisper_request {"status":"ok","audio_s":9.0,"prep_s":0.4,"infer_s":7.6,"total_s":8.1,"rtf":0.889,...}`:
+  `whisper_request {"status":"ok","path":"standard","audio_s":9.0,"prep_s":0.4,"infer_s":7.6,"total_s":8.1,"rtf":0.889,...}`:
   audio duration (`audio_s`, `audio_after_vad_s`), upload, queue wait, decode +
   VAD (`prep_s`) and inference (`infer_s`) time, real-time factor
-  (`rtf = (prep_s + infer_s) / audio_s`), model, language, `beam_size`, `vad`,
+  (`rtf = (prep_s + infer_s) / audio_s`), model, language, `beam_size`, `vad`, `path` (`standard|batched`),
+  `temperature_mode` (`fallback|fixed`),
   file size, and `prompt_chars` / `hotwords_chars` / `prompt_source`
   (`none|default|request|both`). Prompt, hotwords and transcript text are
   never logged.
