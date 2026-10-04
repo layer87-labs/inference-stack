@@ -11,6 +11,12 @@
       "matchPackagePatterns": ["*"],
       "groupName": "inference-stack deps",
       "groupSlug": "inference-stack-deps"
+    },
+    {
+      "description": "av must stay on 16.x: faster-whisper 1.2.1 breaks with newer PyAV majors",
+      "matchPackageNames": ["av"],
+      "matchManagers": ["pip_requirements"],
+      "enabled": false
     }
   ],
 

@@ -236,6 +236,16 @@ Measured on CPU: ~2.0 GiB RSS peak; roughly real-time speed on 2 threads (a
   VAD and decoder (`WHISPER_WARMUP`, default `true`) so the first real request
   does not pay the initialisation cost. `/health` returns 503 until model and
   warmup are done; a failed warmup is logged and does not block startup.
+- Model source and pins: the image bakes `large-v3-turbo` from
+  `dropbox-dash/faster-whisper-large-v3-turbo` at a fixed commit
+  (`WHISPER_MODEL_REVISION` in `deploy/Containerfile.whisper`) and verifies
+  `model.bin` against its SHA-256; the build fails if either changes. This is
+  the repository faster-whisper's `large-v3-turbo` alias
+  (`mobiuslabsgmbh/faster-whisper-large-v3-turbo`) redirects to (HTTP 307);
+  `Systran/faster-whisper-large-v3-turbo` answers HTTP 401. Model license: MIT.
+  Python dependencies are pinned in `deploy/whisper/requirements.txt` (`av`
+  must stay on 16.x, newer majors break faster-whisper 1.2.1) and the base
+  image by digest.
 - Per-request log line (JSON after the prefix `whisper_request`), e.g.
   `whisper_request {"status":"ok","path":"standard","audio_s":9.0,"prep_s":0.4,"infer_s":7.6,"total_s":8.1,"rtf":0.889,...}`:
   audio duration (`audio_s`, `audio_after_vad_s`), upload, queue wait, decode +
