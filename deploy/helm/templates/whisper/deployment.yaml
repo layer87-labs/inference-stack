@@ -62,12 +62,19 @@ spec:
           value: {{ .Values.whisper.initialPrompt | quote }}
         - name: WHISPER_HOTWORDS
           value: {{ .Values.whisper.hotwords | quote }}
+        - name: WHISPER_CONDITION_ON_PREVIOUS_TEXT
+          value: {{ .Values.whisper.conditionOnPreviousText | quote }}
+        - name: WHISPER_BATCH_THRESHOLD_S
+          value: {{ .Values.whisper.batchThresholdSeconds | quote }}
+        - name: WHISPER_BATCH_SIZE
+          value: {{ .Values.whisper.batchSize | quote }}
         ports:
         - name: http
           containerPort: {{ .Values.whisper.service.port }}
           protocol: TCP
         # /health is answered independently of inference (see
-        # deploy/whisper/server.py), so a long transcription cannot fail it.
+        # deploy/whisper/server.py), so a long transcription cannot fail it. It
+        # reports ready only after the model is loaded and the warmup has run.
         readinessProbe:
           httpGet:
             path: /health
