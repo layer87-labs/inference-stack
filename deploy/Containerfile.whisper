@@ -14,31 +14,48 @@
 # Model is baked into the image (large-v3-turbo, ~1.6 GB) and loaded from a
 # local path — the container runs fully offline and needs no PVC.
 #
+# Model source (pinned, see the ARGs below):
+#   faster-whisper maps "large-v3-turbo" to mobiuslabsgmbh/faster-whisper-large-v3-turbo.
+#   That repository now answers HTTP 307 and redirects to
+#   dropbox-dash/faster-whisper-large-v3-turbo, which is where the files are
+#   served from (checked 2026-10). Systran/faster-whisper-large-v3-turbo
+#   answers HTTP 401. Instead of relying on that alias and redirect, the build
+#   downloads the repository that actually serves the files, at a fixed commit,
+#   and verifies model.bin against its SHA-256. A moved or changed source fails
+#   the build instead of silently changing the image.
+#   License of the model: MIT (CTranslate2 conversion of openai/whisper-large-v3-turbo).
+#   To update: pick a new commit, set WHISPER_MODEL_REVISION and the new
+#   model.bin SHA-256 (Hugging Face file page, "Git LFS Details").
+#
 # Hardened: non-root (uid 1000), no network access needed at runtime,
 # ctranslate2 4.x ships a non-executable stack, so the default seccomp
 # profile and allowPrivilegeEscalation=false work.
 
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d
 
+# WHISPER_MODEL names the model (image tag, MODEL_NAME); the release workflow
+# reads this line, keep it as is.
 ARG WHISPER_MODEL=large-v3-turbo
+ARG WHISPER_MODEL_REPO=dropbox-dash/faster-whisper-large-v3-turbo
+ARG WHISPER_MODEL_REVISION=0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf
+ARG WHISPER_MODEL_SHA256=e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da
 
-# av is pinned: faster-whisper 1.2.x breaks with newer PyAV major versions
-# ("open() got an unexpected keyword argument 'metadata_errors'").
-RUN pip install --no-cache-dir \
-    "faster-whisper==1.2.1" \
-    "av==16.1.0" \
-    "fastapi>=0.110.0" \
-    "uvicorn[standard]>=0.27.0" \
-    "python-multipart>=0.0.9"
+# All Python dependencies are pinned in deploy/whisper/requirements.txt
+# (including av==16.1.0, which must not move: newer PyAV majors break
+# faster-whisper 1.2.1). The base image is pinned by digest.
+COPY deploy/whisper/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
 
 RUN groupadd -g 1000 whisper && \
     useradd -u 1000 -g whisper -m -s /bin/bash whisper && \
     mkdir -p /opt/model && chown whisper:whisper /opt/model
 
-# Bake the model (needs network at build time only).
+# Bake the model (needs network at build time only). Same file set as
+# faster-whisper's own download.
 USER 1000
-RUN python -c "from faster_whisper.utils import download_model; download_model('${WHISPER_MODEL}', output_dir='/opt/model')" && \
-    rm -rf /home/whisper/.cache
+RUN python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='${WHISPER_MODEL_REPO}', revision='${WHISPER_MODEL_REVISION}', local_dir='/opt/model', allow_patterns=['config.json', 'preprocessor_config.json', 'model.bin', 'tokenizer.json', 'vocabulary.*'])" && \
+    echo "${WHISPER_MODEL_SHA256}  /opt/model/model.bin" | sha256sum -c - && \
+    rm -rf /opt/model/.cache /home/whisper/.cache
 
 WORKDIR /app
 COPY --chown=1000:1000 deploy/whisper/server.py /app/server.py

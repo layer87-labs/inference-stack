@@ -1,0 +1,24 @@
+# Python dependencies of the whisper image (deploy/Containerfile.whisper).
+# Everything the server imports is pinned; bump deliberately and re-run the
+# image smoke test (start the container, POST a short clip to
+# /v1/audio/transcriptions).
+
+faster-whisper==1.2.1
+
+# av must stay on 16.x: faster-whisper 1.2.1 breaks with newer PyAV majors
+# ("open() got an unexpected keyword argument 'metadata_errors'"). Renovate is
+# told to leave it alone (renovate.json).
+av==16.1.0
+
+# faster-whisper's runtime and model download, pinned to the versions the
+# image was tested with (faster-whisper itself only constrains them loosely).
+ctranslate2==4.8.2
+huggingface_hub==1.33.0
+numpy==2.5.3
+onnxruntime==1.30.0
+tokenizers==0.23.2
+
+# HTTP server (deploy/whisper/server.py).
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
