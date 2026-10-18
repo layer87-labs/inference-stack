@@ -10,7 +10,7 @@ Enabled backends:
   ✗ Embedding  (disabled)
 {{- end }}
 {{- if .Values.reranker.enabled }}
-  ✓ Reranker   (BAAI/bge-reranker-v2-m3)
+  ✓ Reranker   ({{ .Values.reranker.modelName }})
     Runtime:    {{ .Values.reranker.image.repository }}:{{ .Values.reranker.image.tag | default .Chart.AppVersion }}
     Model init: {{ .Values.reranker.modelInit.image.repository }}:{{ .Values.reranker.modelInit.image.tag | default .Chart.AppVersion }}
     Service:    {{ include "inference-stack.fullname" . }}-reranker:{{ .Values.reranker.service.port }}

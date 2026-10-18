@@ -97,12 +97,14 @@ docker/tei-model-init-embedding:
 
 ## ── Docker / Track E: Reranker (TEI/ONNX) ──────────────────────────────────
 
-# tei-reranker-model-init — ONNX-exported bge-reranker-v2-m3
-# Uses optimum-cli to export SafeTensors → ONNX (required by TEI ORT backend).
+# tei-reranker-model-init — reranker as ONNX for TEI's ORT backend.
+# Uses the model's own onnx/model.onnx if it ships one, else optimum-cli exports it.
+# Pick the model with RERANKER_MODEL_ID, e.g. RERANKER_MODEL_ID=BAAI/bge-reranker-v2-m3
+RERANKER_MODEL_ID ?= cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
 docker/tei-reranker-model-init:
 	docker build \
 	  -f deploy/Containerfile.tei-reranker-model-init \
-	  --build-arg MODEL_ID=BAAI/bge-reranker-v2-m3 \
+	  --build-arg MODEL_ID=$(RERANKER_MODEL_ID) \
 	  --build-arg MODEL_DATE=$(MODEL_DATE) \
 	  -t $(REGISTRY)/tei-reranker-model-init:$(VERSION) \
 	  .

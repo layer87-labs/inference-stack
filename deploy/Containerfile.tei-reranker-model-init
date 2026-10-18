@@ -2,22 +2,30 @@
 #
 # Containerfile.tei-reranker-model-init — TEI-compatible reranker model init container
 #
-# Downloads bge-reranker-v2-m3 and exports it to ONNX via Optimum.
-# TEI requires onnx/model.onnx for XLMRoberta-based rerankers (ORT backend).
+# Downloads a cross-encoder reranker and prepares onnx/model.onnx for TEI's ORT
+# backend. If the model repository already ships onnx/model.onnx, that file is
+# used as-is; otherwise the model is exported to ONNX via Optimum.
 #
-# Build:
+# Build (default, small multilingual model that ships its own ONNX file):
+#   docker build -f deploy/Containerfile.tei-reranker-model-init \
+#     --build-arg MODEL_ID=cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 \
+#     --build-arg MODEL_REVISION=1427fd652930e4ba29e8149678df786c240d8825 \
+#     -t ghcr.io/layer87-labs/tei-reranker-model-init:mmarco-mminilmv2-l12-h384-v1-2026.10 .
+#
+# Build (higher quality, much slower on CPU; ONNX export at build time):
 #   docker build -f deploy/Containerfile.tei-reranker-model-init \
 #     --build-arg MODEL_ID=BAAI/bge-reranker-v2-m3 \
-#     --build-arg MODEL_DATE=2026.06 \
-#     -t ghcr.io/layer87-labs/tei-reranker-model-init:bge-reranker-v2-m3-2026.06 .
+#     -t ghcr.io/layer87-labs/tei-reranker-model-init:bge-reranker-v2-m3-2026.10 .
 
-ARG MODEL_ID=BAAI/bge-reranker-v2-m3
-ARG MODEL_DATE=2026.06
+ARG MODEL_ID=cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
+ARG MODEL_REVISION=
+ARG MODEL_DATE=2026.10
 
 # ── Stage 1: download + ONNX export ───────────────────────────────────────────
 FROM python:3.12-slim AS builder
 
 ARG MODEL_ID
+ARG MODEL_REVISION
 
 RUN pip install --quiet --no-cache-dir \
       "huggingface_hub[cli]>=0.24" \
@@ -26,20 +34,33 @@ RUN pip install --quiet --no-cache-dir \
       "torch>=2.2" \
       --extra-index-url https://download.pytorch.org/whl/cpu
 
-# Download model (safetensors + tokenizer, no PyTorch .bin needed for export)
-RUN hf download "${MODEL_ID}" \
-      --exclude "*.ot" \
-      --exclude "flax_model*" \
-      --exclude "tf_model*" \
+# Download model. Several patterns go into ONE --exclude: the option takes a
+# list, so a second --exclude would replace the first.
+RUN hf download "${MODEL_ID}" ${MODEL_REVISION:+--revision "${MODEL_REVISION}"} \
+      --exclude "*.ot" "flax_model*" "tf_model*" "pytorch_model.bin" \
+                "openvino/*" "onnx/model_*" \
       --local-dir /model-src
 
-# Export to ONNX — task=text-classification = cross-encoder (reranker)
-RUN optimum-cli export onnx \
-      --model /model-src \
-      --task text-classification \
-      --opset 14 \
-      --framework pt \
-      /model-onnx/
+# Use the repository's own onnx/model.onnx when present (copying only what TEI
+# needs), else export to ONNX. task=text-classification = cross-encoder (reranker)
+RUN if [ -f /model-src/onnx/model.onnx ]; then \
+      echo "using shipped onnx/model.onnx"; \
+      mkdir -p /model-onnx/onnx && \
+      cp /model-src/onnx/model.onnx /model-onnx/onnx/ && \
+      cd /model-src && \
+      for f in config.json tokenizer.json tokenizer_config.json \
+               special_tokens_map.json sentencepiece.bpe.model; do \
+        if [ -f "$f" ]; then cp "$f" /model-onnx/; fi; \
+      done; \
+    else \
+      optimum-cli export onnx \
+        --model /model-src \
+        --task text-classification \
+        --opset 14 \
+        --framework pt \
+        /model-onnx/; \
+    fi && ls -l /model-onnx && \
+    { test -s /model-onnx/onnx/model.onnx || test -s /model-onnx/model.onnx; }
 
 # ── Stage 2: minimal init container ──────────────────────────────────────────
 FROM debian:bookworm-slim
@@ -62,4 +83,4 @@ USER 1000
 ENTRYPOINT ["sh", "-c", "rsync -rlgoDv --ignore-existing /model-baked/ /model/ && echo 'tei-reranker-model-init: done'"]
 
 LABEL org.opencontainers.image.source="https://github.com/layer87-labs/inference-stack"
-LABEL org.opencontainers.image.description="TEI reranker model init — bge-reranker-v2-m3 exported to ONNX for TEI ORT backend"
+LABEL org.opencontainers.image.description="TEI reranker model init — cross-encoder reranker as ONNX for TEI ORT backend"

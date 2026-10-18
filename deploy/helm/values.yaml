@@ -9,7 +9,7 @@
 #   router.enabled:    true
 #
 # Architecture:
-#   tei-runtime             — TEI image for embedding (BGE-M3) and reranking (bge-reranker-v2-m3)
+#   tei-runtime             — TEI image for embedding (BGE-M3) and reranking (cross-encoder)
 #   tei-model-init          — init container that copies baked embedding model to a shared volume
 #   tei-reranker-model-init — init container that copies ONNX-exported reranker model to a shared volume
 #   whisper                 — ASR server with model baked in
@@ -215,11 +215,20 @@ embedding:
   #         app.kubernetes.io/component: embedding
   topologySpreadConstraints: []
 
-# ── Reranker — BAAI/bge-reranker-v2-m3 ───────────────────────────────────────
+# ── Reranker — cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 (default) ──────────
 # Uses TEI (Rust/ONNX via ORT backend) — same runtime image as embedding.
-# Model is exported to ONNX during image build (tei-reranker-model-init).
+# The model is baked into the init image (tei-reranker-model-init) as ONNX.
 # TEI auto-detects SequenceClassification architecture → reranker mode.
 # Router rewrites /v1/rerank → /rerank before forwarding to this backend.
+#
+# The model is selected by the init image tag (the tag names the model):
+#   mmarco-mminilmv2-l12-h384-v1-<YYYY.MM>  118M params, multilingual, ~0.04 s per
+#                                            document pair on 4 CPUs (default)
+#   bge-reranker-v2-m3-<YYYY.MM>             568M params, higher capacity, ~0.4-0.5 s
+#                                            per pair on 4 CPUs; for more CPU or a GPU
+# To switch, set reranker.modelInit.image.tag and reranker.modelName, and delete
+# the old reranker model PVC (the init step never overwrites existing files).
+# See README, section "Reranker model choice".
 reranker:
   enabled: false
 
@@ -233,11 +242,15 @@ reranker:
     tag: "" # defaults to .Chart.AppVersion
     pullPolicy: IfNotPresent
 
-  # Model init container — ONNX-exported bge-reranker-v2-m3
+  # Display name of the model baked into modelInit (shown in NOTES.txt only;
+  # the model itself is chosen by the init image tag below).
+  modelName: "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+
+  # Model init container — reranker model as ONNX
   modelInit:
     image:
       repository: tei-reranker-model-init
-      tag: "bge-reranker-v2-m3-2026.06"
+      tag: "mmarco-mminilmv2-l12-h384-v1-2026.10"
       pullPolicy: IfNotPresent
     securityContext:
       runAsNonRoot: true
@@ -255,8 +268,8 @@ reranker:
   # CPU tuning: ORT warmup with default 16384 batch tokens OOMs on CPU nodes.
   # 2048 keeps RSS within 8Gi limit during warmup and inference.
   #
-  # Resource requirements by --max-batch-tokens (bge-reranker-v2-m3, fp32 ONNX, CPU):
-  #   2048  -> 4-8Gi  RSS  (recommended for CPU)
+  # Resource requirements by --max-batch-tokens (bge-reranker-v2-m3 fp32 ONNX, CPU):
+  #   2048  -> 4-8Gi  RSS  (recommended for CPU; the default small model needs far less)
   #   4096  -> 8-12Gi RSS  (may OOM on 8Gi limit)
   #   16384 -> OOM         (GPU-only)
   extraArgs:
