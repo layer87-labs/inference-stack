@@ -11,7 +11,7 @@ This file provides context for AI coding agents working in this repository.
 | Backend | Runtime | Model | Path prefix | Env vars |
 |---|---|---|---|---|
 | Embedding | TEI (Rust) | BAAI/bge-m3 | `/v1/embeddings`, `/embed`, `/embed_sparse` | `EMBEDDING_ENABLED`, `EMBEDDING_URL` |
-| Reranker | FlagEmbedding (Python) | BAAI/bge-reranker-v2-m3 | `/v1/rerank`, `/rerank` | `RERANKER_ENABLED`, `RERANKER_URL` |
+| Reranker | TEI (Rust, ONNX) | cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 (default), BAAI/bge-reranker-v2-m3 | `/v1/rerank`, `/rerank` | `RERANKER_ENABLED`, `RERANKER_URL` |
 | Whisper ASR | faster-whisper (Python) | large-v3-turbo | `/v1/audio/transcriptions`, `/v1/audio/translations` | `WHISPER_ENABLED`, `WHISPER_URL` |
 
 `/v1/models` returns a merged list from all enabled backends (with static fallback).

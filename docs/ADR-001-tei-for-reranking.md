@@ -119,3 +119,32 @@ would require a product decision outside the scope of this infrastructure compon
 
 Not available in the current INT/PROD cluster configuration and would require significant
 infrastructure changes.
+
+---
+
+## Addendum (2026-10): performance statement corrected, small model added
+
+The figure of 0.27 to 0.47 s in the Performance section was measured for 5 short
+pairs. It does not hold for realistic passages. Measured later with TEI `cpu-1.9.4`
+on 4 CPUs (`--max-batch-tokens 2048`, ORT backend, one request with 20 documents of
+800 characters each, German/English mix), `BAAI/bge-reranker-v2-m3` needs 8.3 to
+11.9 s as fp32 ONNX and 7.9 to 8.2 s as int8 ONNX. That is about 0.4 to 0.5 s per
+pair, so 40 candidates cannot fit an interactive latency budget on CPU. The "~100x"
+speedup over FlagEmbedding stands, but the resulting latency is still too high for
+interactive use at this candidate count.
+
+Decision: the chart default is now `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`
+(118M parameters, Apache-2.0, multilingual including German and English). It ships
+`onnx/model.onnx`, uses the XLM-RoBERTa architecture TEI supports, and needs 0.76 to
+0.85 s for the same 20-document request (about 0.04 s per pair, roughly 10x faster).
+On a small German/English relevance set both models gave the same hit@1/5/10
+(92/96/96 %, against 77/95/96 % without reranking); that set is saturated and cannot
+separate them, so `BAAI/bge-reranker-v2-m3` remains available and documented as the
+higher-quality option for operators with more CPU or a GPU. The model is selected by
+the `tei-reranker-model-init` image tag; the init image now uses a model's own
+`onnx/model.onnx` when it ships one and exports to ONNX only otherwise.
+
+Not selected for licence or architecture reasons: `jinaai/jina-reranker-v2-base-multilingual`
+(CC-BY-NC-4.0), `mxbai-rerank` and `jina-reranker-v1-tiny-en` (English only,
+architecture not supported by TEI). The "Use a different reranker model (smaller)"
+alternative above is superseded by this addendum.

@@ -68,6 +68,20 @@ jobs:
       contains(github.event.inputs.targets, 'reranker') ||
       github.event.inputs.targets == 'all'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Default: small multilingual cross-encoder that ships its own ONNX file.
+          - slug: mmarco-mminilmv2-l12-h384-v1
+            model_id: cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
+            revision: 1427fd652930e4ba29e8149678df786c240d8825
+            push_latest: true
+          # Higher quality, much slower on CPU; exported to ONNX at build time.
+          - slug: bge-reranker-v2-m3
+            model_id: BAAI/bge-reranker-v2-m3
+            revision: ""
+            push_latest: false
     steps:
       - uses: actions/checkout@v7
 
@@ -79,19 +93,22 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set model tag
-        run: echo "MODEL_TAG=bge-reranker-v2-m3-$(date +%Y.%m)" >> $GITHUB_ENV
+        run: echo "MODEL_TAG=${{ matrix.slug }}-$(date +%Y.%m)" >> $GITHUB_ENV
 
       - name: Build and push TEI reranker model init (ONNX)
         run: |
           docker build \
             -f deploy/Containerfile.tei-reranker-model-init \
-            --build-arg MODEL_ID=BAAI/bge-reranker-v2-m3 \
+            --build-arg MODEL_ID=${{ matrix.model_id }} \
+            --build-arg MODEL_REVISION=${{ matrix.revision }} \
             --build-arg MODEL_DATE=$(date +%Y.%m) \
             -t ${{ env.REGISTRY }}/tei-reranker-model-init:${{ env.MODEL_TAG }} \
-            -t ${{ env.REGISTRY }}/tei-reranker-model-init:latest \
             .
           docker push ${{ env.REGISTRY }}/tei-reranker-model-init:${{ env.MODEL_TAG }}
-          docker push ${{ env.REGISTRY }}/tei-reranker-model-init:latest
+          if [ "${{ matrix.push_latest }}" = "true" ]; then
+            docker tag ${{ env.REGISTRY }}/tei-reranker-model-init:${{ env.MODEL_TAG }} ${{ env.REGISTRY }}/tei-reranker-model-init:latest
+            docker push ${{ env.REGISTRY }}/tei-reranker-model-init:latest
+          fi
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
