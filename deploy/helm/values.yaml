@@ -266,26 +266,39 @@ reranker:
   modelID: "/model"
 
   # CPU tuning: ORT warmup with default 16384 batch tokens OOMs on CPU nodes.
-  # 2048 keeps RSS within 8Gi limit during warmup and inference.
+  # 2048 keeps memory bounded during warmup and inference.
+  #
+  # Default model (mmarco-mMiniLMv2, fp32 ONNX): measured working set about
+  # 1.4 GiB at --max-batch-tokens 2048, also with 4 concurrent requests of
+  # 40 passages each. Inference is CPU-bound: one request keeps 4 CPUs busy,
+  # so concurrent requests queue and latency grows roughly linearly with load.
+  # Cost also grows with passage length (about 190 tokens for 800 characters,
+  # 120 tokens for 500), so send few, short passages: on 4 vCPUs about 0.8 s
+  # for 15 passages of 500 characters, 1.0 s for 20 and 2.0 s for 40.
+  # Inputs longer than 512 tokens are truncated by TEI's default and do not fail.
   #
   # Resource requirements by --max-batch-tokens (bge-reranker-v2-m3 fp32 ONNX, CPU):
-  #   2048  -> 4-8Gi  RSS  (recommended for CPU; the default small model needs far less)
+  #   2048  -> 4-8Gi  RSS  (recommended for CPU)
   #   4096  -> 8-12Gi RSS  (may OOM on 8Gi limit)
   #   16384 -> OOM         (GPU-only)
   extraArgs:
     - "--max-batch-tokens"
     - "2048"
+    - "--max-client-batch-size"
+    - "32"
 
   service:
     port: 80
 
+  # Sized for the default small model (measured, see above). For
+  # BAAI/bge-reranker-v2-m3 use memory requests 4Gi / limits 8Gi.
   resources:
     requests:
-      cpu: "500m"
-      memory: "4Gi"
+      cpu: "2"
+      memory: "1536Mi"
     limits:
       cpu: "4"
-      memory: "8Gi"
+      memory: "2Gi"
 
   # Model volume — PVC keeps model across pod restarts (avoids re-copy)
   # Ignored (treated as false) when replicaCount > 1 — see replicaCount above.

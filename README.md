@@ -207,6 +207,44 @@ stand-in, so it cannot separate the two models. Real-world German technical
 text may favour the larger model; measure on your own data if quality matters
 more than latency.
 
+#### Sizing the request for the default model
+
+Latency is dominated by the number of passages and their length, and one
+request already uses all CPUs, so concurrent requests queue. Measured with the
+default model on a 4-vCPU pod (TEI `cpu-1.9.4`, `--max-batch-tokens 2048`),
+75 queries, passages of title plus text cut to the given length (800
+characters are about 190 tokens, 500 about 120), p95 latency of one `/rerank`
+call:
+
+| Passages | 800 chars | 600 chars | 500 chars | 400 chars |
+| -------- | --------- | --------- | --------- | --------- |
+| 40       | 3.2 s     | 2.5 s     | 2.1 s     | 1.8 s     |
+| 30       | 2.4 s     | 1.9 s     | 1.7 s     | 1.4 s     |
+| 20       | 1.7 s     | 1.3 s     | 1.1 s     | 1.0 s     |
+| 15       | 1.3 s     | 1.0 s     | 0.9 s     | 0.7 s     |
+
+With four such requests in flight at once, p95 is about 3 to 4 times higher
+(for example 3.0 s for 15 passages of 500 characters, 6.4 s for 40 of 400).
+If the budget is about 1.5 s per request, send at most 15 to 20 passages of
+about 500 characters, and scale out (`reranker.replicaCount`) or add CPU for
+concurrent callers. Reranking a short list also bounds what it can gain: it can
+only reorder the passages it receives.
+
+Memory: the working set stayed at about 1.4 GiB, including four concurrent
+requests of 40 passages, so the chart defaults to a 1.5 GiB request and a 2 GiB
+limit. Inputs longer than the model's 512-token limit are truncated by default
+(`truncate: true`, or the TEI default when the field is omitted); with
+`truncate: false` the request fails with HTTP 422.
+
+The model repository also ships quantised ONNX variants (for example
+`onnx/model_qint8_avx512_vnni.onnx`, `onnx/model_quint8_avx2.onnx`). They are
+not used by this chart and were not measured; they are CPU-specific and
+would need to be baked as `onnx/model.onnx` for TEI.
+
+Licence: `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` is Apache-2.0,
+`BAAI/bge-reranker-v2-m3` is Apache-2.0 as well (as tagged on the Hugging Face hub); check the model card of
+anything else you select.
+
 To use the higher-quality model (more CPU or a GPU), build or pull the matching
 init image and set:
 
