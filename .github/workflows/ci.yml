@@ -10,6 +10,11 @@ permissions:
 jobs:
   # ── relctl: PR metadata + version preview ─────────────────────────────────
   build-info:
+    # The reusable workflow posts relctl's help comment on the pull request and
+    # requests pull-requests: write; the caller must grant at least that.
+    permissions:
+      contents: read
+      pull-requests: write
     uses: layer87-labs/relctl-action/.github/workflows/generate-build-infos.yml@main
     secrets:
       token: ${{ secrets.GITHUB_TOKEN }}
