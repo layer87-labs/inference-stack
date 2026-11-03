@@ -126,6 +126,10 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+      # Containerfile.router copies build/bin/inference-router: build it first
+      - name: Build router binary
+        run: make build/router VERSION=${VERSION}
+
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
@@ -316,6 +320,9 @@ jobs:
     if: needs.reranker-model-release.outputs.release-id != ''
     runs-on: ubuntu-latest
     steps:
+      # relctl reads .relctl.yaml (components) from the checkout
+      - uses: actions/checkout@v7
+
       - name: Publish release
         uses: layer87-labs/relctl-action@v1
         with:
