@@ -52,7 +52,36 @@ deploy/
 
 ## Container Image Versioning
 
-All images use **CalVer** (`YYYYMM.DD.PATCH`).
+Every independently releasable part is a [relctl](https://github.com/layer87-labs/relctl) **component**
+(`.relctl.yaml`, `components:`). A component has its own tag (`<component>/YYYYMM.D.N`), its own latest
+release and its own CalVer counter, and it is built and released only when one of its `paths` changed
+(`relctl release changed --component NAME`, see `.github/workflows/release.yml`).
+
+relctl's CalVer is `YYYYMM.D.N`: year and month, day of the month **without a leading zero**, and the number of
+the release that day (for example `202611.3.1`).
+
+| Component | Paths (short) | Images / artifacts | Image tag |
+|---|---|---|---|
+| `router` | `cmd/`, `internal/`, `go.mod`, `Containerfile.router` | `inference-router` | `<version>` |
+| `tei` | `Containerfile.tei-base`, `Containerfile.tei-runtime` | `tei-base`, `tei-runtime` | `<version>` |
+| `embedding-model` | `Containerfile.tei-model-init` | `tei-model-init` | `bge-m3-<version>`, `latest` |
+| `reranker-model` | `Containerfile.tei-reranker-model-init` | `tei-reranker-model-init` (matrix of models) | `<model-slug>-<version>`; `latest` for the default model only |
+| `whisper` | `deploy/whisper/`, `Containerfile.whisper` | `whisper` | `<whisper-model>-<version>`, `latest` |
+| `chart` | `deploy/helm/` and the router and tei paths | Helm chart (OCI) | chart version = `<version>` |
+
+Notes:
+
+- The version is **bare** in image tags and chart versions (`202611.3.1`); only the git tag carries the
+  `<component>/` prefix.
+- The chart is released with every router or tei release because it pins their tags. At packaging time the
+  workflow writes the latest released router and tei versions into the packaged `values.yaml` (the file in git
+  keeps `tag: ""`) and sets `appVersion` to the router version. Model and whisper tags in `values.yaml` are
+  pinned by hand: bump them when you want the chart to use a newer model image.
+- Pipelines guard publish/build jobs with `release-id != ''`: relctl exports the release id only for a draft.
+- A component can be forced without a change: run the Release workflow manually and list it in `components`.
+- Locally, `make versions` shows the image names; `VERSION` (or `ROUTER_VERSION`, `TEI_IMAGE_VERSION`,
+  `EMBEDDING_MODEL_VERSION`, `RERANKER_MODEL_VERSION`, `WHISPER_IMAGE_VERSION`) sets the tag.
+- New releasable part: add it under `components:` in `.relctl.yaml` and to `release.yml`.
 
 Registry: `ghcr.io/layer87-labs/<image>:<tag>`
 

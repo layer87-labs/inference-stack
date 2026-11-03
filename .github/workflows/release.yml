@@ -29,12 +29,14 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io/layer87-labs
-  RELCTL_VERSION: "2.11.0"
+  RELCTL_TOOL_VERSION: "2.11.0"
 
 jobs:
   # ── Which components changed since their latest release? ──────────────────
   changes:
     runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     outputs:
       router: ${{ steps.decide.outputs.router }}
       tei: ${{ steps.decide.outputs.tei }}
@@ -51,7 +53,7 @@ jobs:
         uses: layer87-labs/relctl-action@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          relctl-version: ${{ env.RELCTL_VERSION }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
 
       - name: Changed (router)
         id: router
@@ -146,7 +148,7 @@ jobs:
         uses: layer87-labs/relctl-action@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          relctl-version: ${{ env.RELCTL_VERSION }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
           run: relctl release publish --component router --release-id ${{ needs.router-release.outputs.release-id }}
 
   # ── tei (tei-base + tei-runtime share one version) ────────────────────────
@@ -196,7 +198,7 @@ jobs:
         uses: layer87-labs/relctl-action@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          relctl-version: ${{ env.RELCTL_VERSION }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
           run: relctl release publish --component tei --release-id ${{ needs.tei-release.outputs.release-id }}
 
   # ── embedding-model (image tag: bge-m3-<version> and latest) ──────────────
@@ -245,7 +247,7 @@ jobs:
         uses: layer87-labs/relctl-action@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          relctl-version: ${{ env.RELCTL_VERSION }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
           run: relctl release publish --component embedding-model --release-id ${{ needs.embedding-model-release.outputs.release-id }}
 
   # ── reranker-model (one version for the component, one image per model) ───
@@ -318,7 +320,7 @@ jobs:
         uses: layer87-labs/relctl-action@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          relctl-version: ${{ env.RELCTL_VERSION }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
           run: relctl release publish --component reranker-model --release-id ${{ needs.reranker-model-release.outputs.release-id }}
 
   # ── whisper (image tag: <whisper-model>-<version> and latest) ─────────────
@@ -370,7 +372,7 @@ jobs:
         uses: layer87-labs/relctl-action@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          relctl-version: ${{ env.RELCTL_VERSION }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
           run: relctl release publish --component whisper --release-id ${{ needs.whisper-release.outputs.release-id }}
 
   # ── chart (OCI → ghcr.io) ─────────────────────────────────────────────────
@@ -393,6 +395,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.chart-release.outputs.version }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -402,7 +405,7 @@ jobs:
         uses: layer87-labs/relctl-action@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          relctl-version: ${{ env.RELCTL_VERSION }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
 
       - name: Latest router version
         id: router
@@ -441,5 +444,5 @@ jobs:
         uses: layer87-labs/relctl-action@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          relctl-version: ${{ env.RELCTL_VERSION }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
           run: relctl release publish --component chart --release-id ${{ needs.chart-release.outputs.release-id }}

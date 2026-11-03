@@ -147,8 +147,15 @@ make build
 make docker
 
 # Push to registry
-make push REGISTRY=ghcr.io/layer87-labs VERSION=0.1.0
+make push REGISTRY=ghcr.io/layer87-labs VERSION=202611.3.1
 ```
+
+## Releases
+
+The router, TEI images, embedding model, reranker models, Whisper and the Helm chart are released
+independently as [relctl](https://github.com/layer87-labs/relctl) components with CalVer versions
+(`YYYYMM.D.N`, tag `<component>/<version>`). Only the parts whose files changed are built on a merge to
+`main`. See `AGENTS.md` for the component table and image tag formats.
 
 ## Metrics
 
@@ -253,7 +260,7 @@ reranker:
   modelName: "BAAI/bge-reranker-v2-m3"
   modelInit:
     image:
-      tag: "bge-reranker-v2-m3-<YYYY.MM>"   # see the published tags
+      tag: "bge-reranker-v2-m3-<version>"   # e.g. bge-reranker-v2-m3-202611.3.1, see the published tags
 ```
 
 The init step copies with `--ignore-existing`, so when you change the model on
