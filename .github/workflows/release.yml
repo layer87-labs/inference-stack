@@ -398,7 +398,11 @@ jobs:
 
   chart-build:
     needs: chart-release
-    if: needs.chart-release.outputs.release-id != ''
+    # The default success() looks at the whole chain of ancestors: a skipped tei-build
+    # (nothing changed) would skip this job although chart-release succeeded.
+    if: >-
+      ${{ !cancelled() && needs.chart-release.result == 'success'
+      && needs.chart-release.outputs.release-id != '' }}
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.chart-release.outputs.version }}
