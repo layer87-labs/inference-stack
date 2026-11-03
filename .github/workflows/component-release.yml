@@ -1,0 +1,44 @@
+name: Component release
+
+# Creates the draft GitHub release of one relctl component (CalVer, own tag
+# prefix, own counter). Called by release.yml; the caller builds the artifacts and
+# publishes the release afterwards.
+#
+# relctl-action's create-release.yml has no `component` input yet, so relctl is
+# called directly through the setup action.
+on:
+  workflow_call:
+    inputs:
+      component:
+        description: "Component name from .relctl.yaml"
+        required: true
+        type: string
+    outputs:
+      release-id:
+        description: "ID of the draft release; empty when the release already exists"
+        value: ${{ jobs.release.outputs.release-id }}
+      version:
+        description: "Released version (CalVer, without the tag prefix)"
+        value: ${{ jobs.release.outputs.version }}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      release-id: ${{ steps.create.outputs.RELCTL_RELEASE_ID }}
+      version: ${{ steps.create.outputs.RELCTL_VERSION }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # CalVer counter and tags come from the git history
+
+      - name: Create release (${{ inputs.component }})
+        id: create
+        uses: layer87-labs/relctl-action@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          relctl-version: "2.11.0"
+          run: relctl release create --component ${{ inputs.component }} --version-scheme calver >> $GITHUB_STEP_SUMMARY
