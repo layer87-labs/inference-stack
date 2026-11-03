@@ -1,2 +1,46 @@
 version_scheme: calver
 default_branch: main
+
+# Independently released parts of the repository. Every component has its own
+# tag (<name>/YYYYMM.D.N), its own latest release and its own CalVer counter,
+# and is built and released only when one of its paths changed.
+components:
+  router:
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - "deploy/Containerfile.router"
+    version_scheme: calver
+  tei:
+    paths:
+      - "deploy/Containerfile.tei-base"
+      - "deploy/Containerfile.tei-runtime"
+    version_scheme: calver
+  embedding-model:
+    paths:
+      - "deploy/Containerfile.tei-model-init"
+    version_scheme: calver
+  reranker-model:
+    paths:
+      - "deploy/Containerfile.tei-reranker-model-init"
+    version_scheme: calver
+  whisper:
+    paths:
+      - "deploy/whisper/**"
+      - "deploy/Containerfile.whisper"
+    version_scheme: calver
+  # The chart pins the router and tei image tags when it is packaged, so it is
+  # also released when one of those components is.
+  chart:
+    paths:
+      - "deploy/helm/**"
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - "deploy/Containerfile.router"
+      - "deploy/Containerfile.tei-base"
+      - "deploy/Containerfile.tei-runtime"
+    version_scheme: calver

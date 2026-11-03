@@ -1,34 +1,121 @@
 name: Release
 
+# Every independently releasable part of the repository is a relctl component
+# (see .relctl.yaml). On a push to main only the components whose paths changed
+# are released and built; each has its own tag (<component>/<CalVer>), latest
+# release and CalVer counter. Manual runs can force components.
 on:
   push:
     branches: [main]
     # Only trigger on merged PRs (push to main), not on tag pushes
     tags-ignore: ["**"]
+  workflow_dispatch:
+    inputs:
+      components:
+        description: "Components to release even if nothing changed (comma-separated: router,tei,embedding-model,reranker-model,whisper,chart or 'all')"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
   packages: write
   id-token: write  # cosign keyless OIDC signing
 
+# Release creation counts per day from git tags: never run two releases at once.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io/layer87-labs
+  RELCTL_TOOL_VERSION: "2.11.0"
 
 jobs:
-  # ── Step 1: relctl creates a GitHub Release (CalVer tag) ──────────────────
-  create-release:
-    uses: layer87-labs/relctl-action/.github/workflows/create-release.yml@main
-    with:
-      version-scheme: calver
-    secrets:
-      token: ${{ secrets.GITHUB_TOKEN }}
-
-  # ── Step 2: Build and push code images ────────────────────────────────────
-  build-and-push:
-    needs: create-release
+  # ── Which components changed since their latest release? ──────────────────
+  changes:
     runs-on: ubuntu-latest
     env:
-      VERSION: ${{ needs.create-release.outputs.version }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    outputs:
+      router: ${{ steps.decide.outputs.router }}
+      tei: ${{ steps.decide.outputs.tei }}
+      embedding-model: ${{ steps.decide.outputs.embedding-model }}
+      reranker-model: ${{ steps.decide.outputs.reranker-model }}
+      whisper: ${{ steps.decide.outputs.whisper }}
+      chart: ${{ steps.decide.outputs.chart }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # compares with the tag of each component's latest release
+
+      - name: Install relctl
+        uses: layer87-labs/relctl-action@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
+
+      - name: Changed (router)
+        id: router
+        run: relctl release changed --component router
+      - name: Changed (tei)
+        id: tei
+        run: relctl release changed --component tei
+      - name: Changed (embedding-model)
+        id: embedding-model
+        run: relctl release changed --component embedding-model
+      - name: Changed (reranker-model)
+        id: reranker-model
+        run: relctl release changed --component reranker-model
+      - name: Changed (whisper)
+        id: whisper
+        run: relctl release changed --component whisper
+      - name: Changed (chart)
+        id: chart
+        run: relctl release changed --component chart
+
+      - name: Decide
+        id: decide
+        env:
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.components || '' }}
+          CHANGED_ROUTER: ${{ steps.router.outputs.RELCTL_CHANGED }}
+          CHANGED_TEI: ${{ steps.tei.outputs.RELCTL_CHANGED }}
+          CHANGED_EMBEDDING_MODEL: ${{ steps.embedding-model.outputs.RELCTL_CHANGED }}
+          CHANGED_RERANKER_MODEL: ${{ steps.reranker-model.outputs.RELCTL_CHANGED }}
+          CHANGED_WHISPER: ${{ steps.whisper.outputs.RELCTL_CHANGED }}
+          CHANGED_CHART: ${{ steps.chart.outputs.RELCTL_CHANGED }}
+        run: |
+          decide() { # name changed
+            if [ "$2" = "true" ] || [ "${FORCE}" = "all" ] || [[ ",${FORCE// /}," == *",$1,"* ]]; then
+              echo "$1=true" >> "$GITHUB_OUTPUT"
+              echo "$1: release"
+            else
+              echo "$1=false" >> "$GITHUB_OUTPUT"
+              echo "$1: unchanged"
+            fi
+          }
+          decide router "${CHANGED_ROUTER}"
+          decide tei "${CHANGED_TEI}"
+          decide embedding-model "${CHANGED_EMBEDDING_MODEL}"
+          decide reranker-model "${CHANGED_RERANKER_MODEL}"
+          decide whisper "${CHANGED_WHISPER}"
+          decide chart "${CHANGED_CHART}"
+
+  # ── router ────────────────────────────────────────────────────────────────
+  router-release:
+    needs: changes
+    if: needs.changes.outputs.router == 'true'
+    uses: ./.github/workflows/component-release.yml
+    with:
+      component: router
+
+  router-build:
+    needs: router-release
+    # release-id is empty when the release already exists (published): nothing to build
+    if: needs.router-release.outputs.release-id != ''
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.router-release.outputs.version }}
     steps:
       - uses: actions/checkout@v7
 
@@ -39,8 +126,47 @@ jobs:
       - name: Test
         run: go test -race ./...
 
-      - name: Build router binary
-        run: make build/router
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push router
+        run: |
+          make docker/router VERSION=${VERSION}
+          make push/router VERSION=${VERSION}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless via OIDC, by digest)
+        run: scripts/sign-image.sh "${{ env.REGISTRY }}/inference-router:${VERSION}"
+
+      - name: Publish release
+        uses: layer87-labs/relctl-action@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
+          run: relctl release publish --component router --release-id ${{ needs.router-release.outputs.release-id }}
+
+  # ── tei (tei-base + tei-runtime share one version) ────────────────────────
+  tei-release:
+    needs: changes
+    if: needs.changes.outputs.tei == 'true'
+    uses: ./.github/workflows/component-release.yml
+    with:
+      component: tei
+
+  tei-build:
+    needs: tei-release
+    if: needs.tei-release.outputs.release-id != ''
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.tei-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -49,46 +175,274 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── Code images (CalVer from relctl) ────────────────────────────────
-
-      - name: Build and push router
-        run: |
-          make docker/router VERSION=${{ env.VERSION }}
-          make push/router VERSION=${{ env.VERSION }}
-
       - name: Build and push TEI base
         run: |
-          make docker/tei-base VERSION=${{ env.VERSION }}
-          docker push ${{ env.REGISTRY }}/tei-base:${{ env.VERSION }}
+          make docker/tei-base VERSION=${VERSION}
+          docker push ${{ env.REGISTRY }}/tei-base:${VERSION}
 
       - name: Build and push TEI runtime
         run: |
-          make docker/tei-runtime VERSION=${{ env.VERSION }}
-          docker push ${{ env.REGISTRY }}/tei-runtime:${{ env.VERSION }}
-
-      # ── Sign images (keyless cosign via GitHub OIDC, by digest) ─────────
+          make docker/tei-runtime VERSION=${VERSION}
+          docker push ${{ env.REGISTRY }}/tei-runtime:${VERSION}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Sign code images
+      - name: Sign images (keyless via OIDC, by digest)
         run: |
           scripts/sign-image.sh \
-            "${{ env.REGISTRY }}/inference-router:${{ env.VERSION }}" \
-            "${{ env.REGISTRY }}/tei-base:${{ env.VERSION }}" \
-            "${{ env.REGISTRY }}/tei-runtime:${{ env.VERSION }}"
-
-      # ── Helm chart (OCI → ghcr.io) ───────────────────────────────────────
-
-      - name: Package and push Helm chart
-        run: |
-          helm package deploy/helm/ --version ${{ env.VERSION }} --app-version ${{ env.VERSION }}
-          helm push inference-stack-${{ env.VERSION }}.tgz oci://${{ env.REGISTRY }}/charts
-
-      # ── Publish the GitHub Release ──────────────────────────────────────
+            "${{ env.REGISTRY }}/tei-base:${VERSION}" \
+            "${{ env.REGISTRY }}/tei-runtime:${VERSION}"
 
       - name: Publish release
         uses: layer87-labs/relctl-action@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          run: relctl release publish --release-id ${{ needs.create-release.outputs.release-id }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
+          run: relctl release publish --component tei --release-id ${{ needs.tei-release.outputs.release-id }}
+
+  # ── embedding-model (image tag: bge-m3-<version> and latest) ──────────────
+  embedding-model-release:
+    needs: changes
+    if: needs.changes.outputs.embedding-model == 'true'
+    uses: ./.github/workflows/component-release.yml
+    with:
+      component: embedding-model
+
+  embedding-model-build:
+    needs: embedding-model-release
+    if: needs.embedding-model-release.outputs.release-id != ''
+    runs-on: ubuntu-latest
+    env:
+      MODEL_TAG: bge-m3-${{ needs.embedding-model-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push TEI model init (embedding)
+        run: |
+          docker build \
+            -f deploy/Containerfile.tei-model-init \
+            --build-arg MODEL_ID=BAAI/bge-m3 \
+            --build-arg MODEL_DATE=${{ needs.embedding-model-release.outputs.version }} \
+            -t ${{ env.REGISTRY }}/tei-model-init:${MODEL_TAG} \
+            -t ${{ env.REGISTRY }}/tei-model-init:latest \
+            .
+          docker push ${{ env.REGISTRY }}/tei-model-init:${MODEL_TAG}
+          docker push ${{ env.REGISTRY }}/tei-model-init:latest
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless via OIDC, by digest)
+        run: scripts/sign-image.sh "${{ env.REGISTRY }}/tei-model-init:${MODEL_TAG}"
+
+      - name: Publish release
+        uses: layer87-labs/relctl-action@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
+          run: relctl release publish --component embedding-model --release-id ${{ needs.embedding-model-release.outputs.release-id }}
+
+  # ── reranker-model (one version for the component, one image per model) ───
+  reranker-model-release:
+    needs: changes
+    if: needs.changes.outputs.reranker-model == 'true'
+    uses: ./.github/workflows/component-release.yml
+    with:
+      component: reranker-model
+
+  reranker-model-build:
+    needs: reranker-model-release
+    if: needs.reranker-model-release.outputs.release-id != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Default: small multilingual cross-encoder that ships its own ONNX file.
+          - slug: mmarco-mminilmv2-l12-h384-v1
+            model_id: cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
+            revision: 1427fd652930e4ba29e8149678df786c240d8825
+            push_latest: true
+          # Higher quality, much slower on CPU; exported to ONNX at build time.
+          - slug: bge-reranker-v2-m3
+            model_id: BAAI/bge-reranker-v2-m3
+            revision: ""
+            push_latest: false
+    env:
+      VERSION: ${{ needs.reranker-model-release.outputs.version }}
+      MODEL_TAG: ${{ matrix.slug }}-${{ needs.reranker-model-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push TEI reranker model init (ONNX)
+        run: |
+          docker build \
+            -f deploy/Containerfile.tei-reranker-model-init \
+            --build-arg MODEL_ID=${{ matrix.model_id }} \
+            --build-arg MODEL_REVISION=${{ matrix.revision }} \
+            --build-arg MODEL_DATE=${VERSION} \
+            -t ${{ env.REGISTRY }}/tei-reranker-model-init:${MODEL_TAG} \
+            .
+          docker push ${{ env.REGISTRY }}/tei-reranker-model-init:${MODEL_TAG}
+          if [ "${{ matrix.push_latest }}" = "true" ]; then
+            docker tag ${{ env.REGISTRY }}/tei-reranker-model-init:${MODEL_TAG} ${{ env.REGISTRY }}/tei-reranker-model-init:latest
+            docker push ${{ env.REGISTRY }}/tei-reranker-model-init:latest
+          fi
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless via OIDC, by digest)
+        run: scripts/sign-image.sh "${{ env.REGISTRY }}/tei-reranker-model-init:${MODEL_TAG}"
+
+  # Publishes once, after every model of the matrix is built and signed.
+  reranker-model-publish:
+    needs: [reranker-model-release, reranker-model-build]
+    if: needs.reranker-model-release.outputs.release-id != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        uses: layer87-labs/relctl-action@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
+          run: relctl release publish --component reranker-model --release-id ${{ needs.reranker-model-release.outputs.release-id }}
+
+  # ── whisper (image tag: <whisper-model>-<version> and latest) ─────────────
+  whisper-release:
+    needs: changes
+    if: needs.changes.outputs.whisper == 'true'
+    uses: ./.github/workflows/component-release.yml
+    with:
+      component: whisper
+
+  whisper-build:
+    needs: whisper-release
+    if: needs.whisper-release.outputs.release-id != ''
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.whisper-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract whisper model from Containerfile
+        run: |
+          MODEL=$(grep '^ARG WHISPER_MODEL=' deploy/Containerfile.whisper | sed 's/ARG WHISPER_MODEL=//')
+          echo "MODEL_TAG=${MODEL}-${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build and push whisper
+        run: |
+          docker build \
+            -f deploy/Containerfile.whisper \
+            -t ${{ env.REGISTRY }}/whisper:${MODEL_TAG} \
+            -t ${{ env.REGISTRY }}/whisper:latest \
+            .
+          docker push ${{ env.REGISTRY }}/whisper:${MODEL_TAG}
+          docker push ${{ env.REGISTRY }}/whisper:latest
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless via OIDC, by digest)
+        run: scripts/sign-image.sh "${{ env.REGISTRY }}/whisper:${MODEL_TAG}"
+
+      - name: Publish release
+        uses: layer87-labs/relctl-action@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
+          run: relctl release publish --component whisper --release-id ${{ needs.whisper-release.outputs.release-id }}
+
+  # ── chart (OCI → ghcr.io) ─────────────────────────────────────────────────
+  # Runs after router and tei so that the chart pins the versions just released.
+  chart-release:
+    needs: [changes, router-build, tei-build]
+    if: >-
+      ${{ !cancelled() && needs.changes.result == 'success'
+      && !contains(needs.*.result, 'failure')
+      && (needs.changes.outputs.chart == 'true'
+      || needs.router-build.result == 'success'
+      || needs.tei-build.result == 'success') }}
+    uses: ./.github/workflows/component-release.yml
+    with:
+      component: chart
+
+  chart-build:
+    needs: chart-release
+    if: needs.chart-release.outputs.release-id != ''
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.chart-release.outputs.version }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # latest router and tei versions come from their tags
+
+      - name: Install relctl
+        uses: layer87-labs/relctl-action@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
+
+      - name: Latest router version
+        id: router
+        run: relctl release changed --component router
+      - name: Latest tei version
+        id: tei
+        run: relctl release changed --component tei
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # router, tei-runtime and tei-base are versioned separately now, so the
+      # chart cannot default their tags to its appVersion any more: the packaged
+      # values pin the latest released versions. The source values stay unchanged.
+      - name: Package and push Helm chart
+        env:
+          ROUTER_VERSION: ${{ steps.router.outputs.RELCTL_LATEST_VERSION }}
+          TEI_IMAGE_VERSION: ${{ steps.tei.outputs.RELCTL_LATEST_VERSION }}
+        run: |
+          if [ -z "${ROUTER_VERSION}" ] || [ -z "${TEI_IMAGE_VERSION}" ]; then
+            echo "::error::no released router or tei version found; release both components first (manual run with components=router,tei)"
+            exit 1
+          fi
+          cp -r deploy/helm "${RUNNER_TEMP}/chart"
+          yq -i '.router.image.tag = strenv(ROUTER_VERSION)
+            | .embedding.image.tag = strenv(TEI_IMAGE_VERSION)
+            | .reranker.image.tag = strenv(TEI_IMAGE_VERSION)' "${RUNNER_TEMP}/chart/values.yaml"
+          helm package "${RUNNER_TEMP}/chart" --version "${VERSION}" --app-version "${ROUTER_VERSION}" --destination "${RUNNER_TEMP}"
+          helm push "${RUNNER_TEMP}/inference-stack-${VERSION}.tgz" oci://${{ env.REGISTRY }}/charts
+
+      - name: Publish release
+        uses: layer87-labs/relctl-action@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
+          run: relctl release publish --component chart --release-id ${{ needs.chart-release.outputs.release-id }}

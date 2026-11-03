@@ -29,7 +29,7 @@ router:
 
   image:
     repository: inference-router
-    tag: "" # defaults to .Chart.AppVersion
+    tag: "" # pinned to the latest release when the chart is packaged; else .Chart.AppVersion
     pullPolicy: IfNotPresent
 
   replicas: 1
@@ -92,15 +92,16 @@ embedding:
   # tei-runtime image — TEI embedding server (BGE-M3)
   image:
     repository: tei-runtime
-    tag: "" # defaults to .Chart.AppVersion
+    tag: "" # pinned to the latest release when the chart is packaged; else .Chart.AppVersion
     pullPolicy: IfNotPresent
 
   # Model init container — copies baked model to shared /model volume
-  # Model images are versioned independently: <model>-<YYYY.MM>
+  # Model images are versioned independently: <model>-<version>
+  # (older images use <model>-<YYYY.MM>; newer ones <model>-<YYYYMM.D.N>)
   modelInit:
     image:
       repository: tei-model-init
-      tag: "bge-m3-2026.06" # model images have their own version scheme
+      tag: "bge-m3-2026.06" # pinned by hand; bump to use a newer model image
       pullPolicy: IfNotPresent
     securityContext:
       runAsNonRoot: true
@@ -222,9 +223,9 @@ embedding:
 # Router rewrites /v1/rerank → /rerank before forwarding to this backend.
 #
 # The model is selected by the init image tag (the tag names the model):
-#   mmarco-mminilmv2-l12-h384-v1-<YYYY.MM>  118M params, multilingual, ~0.04 s per
+#   mmarco-mminilmv2-l12-h384-v1-<version>  118M params, multilingual, ~0.04 s per
 #                                            document pair on 4 CPUs (default)
-#   bge-reranker-v2-m3-<YYYY.MM>             568M params, higher capacity, ~0.4-0.5 s
+#   bge-reranker-v2-m3-<version>             568M params, higher capacity, ~0.4-0.5 s
 #                                            per pair on 4 CPUs; for more CPU or a GPU
 # To switch, set reranker.modelInit.image.tag and reranker.modelName, and delete
 # the old reranker model PVC (the init step never overwrites existing files).
@@ -239,7 +240,7 @@ reranker:
   # tei-runtime image — same runtime as embedding, handles reranking via ONNX
   image:
     repository: tei-runtime
-    tag: "" # defaults to .Chart.AppVersion
+    tag: "" # pinned to the latest release when the chart is packaged; else .Chart.AppVersion
     pullPolicy: IfNotPresent
 
   # Display name of the model baked into modelInit (shown in NOTES.txt only;
@@ -350,7 +351,7 @@ reranker:
 whisper:
   enabled: false
 
-  # Image has the model baked in — versioned as <model>-<YYYY.MM>
+  # Image has the model baked in — versioned as <model>-<version>
   image:
     repository: whisper
     tag: "large-v3-turbo-2026.10"
