@@ -1,124 +1,150 @@
+<p align="center">
+  <img alt="inference-stack: embeddings, reranking and speech-to-text on plain CPU" src="assets/banner.png">
+</p>
+
+<p align="center">
+  <a href="https://github.com/layer87-labs/inference-stack/releases"><img alt="Latest router release" src="https://img.shields.io/github/v/release/layer87-labs/inference-stack?filter=router%2F*&display_name=tag&label=router"></a>
+  <a href="https://github.com/layer87-labs/inference-stack/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/layer87-labs/inference-stack/ci.yml?event=pull_request&label=CI"></a>
+  <a href="go.mod"><img alt="Go version" src="https://img.shields.io/github/go-mod/go-version/layer87-labs/inference-stack"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+</p>
+
 # inference-stack
 
-[![Go Tests](https://github.com/layer87-labs/inference-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/layer87-labs/inference-stack/actions/workflows/ci.yml)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+**inference-stack** is a small OpenAI-compatible router in front of CPU-only inference backends. One endpoint
+gives you **embeddings** (`BAAI/bge-m3` via [TEI](https://github.com/huggingface/text-embeddings-inference)),
+**reranking** (a cross-encoder via TEI/ONNX) and **speech-to-text** (Whisper `large-v3-turbo` via
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper)). It runs on plain CPU and RAM. No GPU needed.
 
-Unified CPU-based inference stack — serving embeddings, reranking and transcription behind a single OpenAI-compatible API.
+**Why it exists.** Search, RAG and transcription should not need a GPU budget or a pile of glue code. We
+([Layer87](https://github.com/layer87-labs)) needed exactly this in our own applications, built it, run it ourselves
+and open-sourced it. It ships with hardened container images, a Helm chart and signed releases.
 
-## Components
+## Highlights
 
-| Component            | Runtime                                                                | Model                   | Purpose                                 |
-| -------------------- | ---------------------------------------------------------------------- | ----------------------- | --------------------------------------- |
-| **inference-router** | Go                                                                     | —                       | Unified OpenAI-compatible reverse proxy |
-| **embedding**        | [TEI](https://github.com/huggingface/text-embeddings-inference) (Rust) | BAAI/bge-m3             | Dense + sparse embeddings               |
-| **reranker**         | [TEI](https://github.com/huggingface/text-embeddings-inference) (Rust, ONNX) | mmarco-mMiniLMv2-L12-H384-v1 (default), bge-reranker-v2-m3 (option) | Cross-encoder reranking |
-| **whisper**          | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (Python)   | large-v3-turbo          | Audio transcription (ASR)               |
-
-All backends are disabled by default and enabled selectively via Helm values or env vars.
-
-## Quick Start
-
-### Local Development
-
-```bash
-# Run unit tests
-make test
-
-# Full end-to-end test (starts mock backends + router)
-make test-local
-```
-
-### Kubernetes (Helm)
-
-```bash
-helm install inference-stack ./deploy/helm \
-  --namespace ai \
-  --set embedding.enabled=true \
-  --set reranker.enabled=true \
-  --set router.enabled=true
-```
-
-## API
-
-All endpoints are OpenAI-compatible:
-
-```bash
-# Embeddings
-curl http://localhost:8080/v1/embeddings \
-  -H "Content-Type: application/json" \
-  -d '{"model":"BAAI/bge-m3","input":"Hello world"}'
-
-# Reranking
-curl http://localhost:8080/v1/rerank \
-  -H "Content-Type: application/json" \
-  -d '{"query":"What is Go?","documents":["Go is a language","Python is a language"]}'
-
-# Transcription
-curl http://localhost:8080/v1/audio/transcriptions \
-  -F model=whisper-large-v3-turbo \
-  -F file=@audio.mp3
-
-# Model list (merged from all enabled backends)
-curl http://localhost:8080/v1/models
-```
-
-`/v1/models` also reports the request limits of the embedding and reranker
-backends (`limits.max_batch_tokens`, `limits.max_client_batch_size`,
-`limits.max_input_length`), read from the running backend, so clients can size
-batches without trial and error. The model id it advertises
-(`BAAI/bge-m3`) can be sent back as `model` on `/v1/embeddings`; the router
-strips it before forwarding, because TEI only accepts its internal model path
-or no model at all.
+- **One API, three capabilities.** `/v1/embeddings`, `/v1/rerank`, `/v1/audio/transcriptions`, plus a merged `/v1/models`
+  that also reports the backends' request limits.
+- **CPU only.** Sized and measured on CPU; the numbers (latency per rerank request, memory, real-time factor) are in
+  [docs/tuning.md](docs/tuning.md).
+- **Backends are optional.** All are off by default; enable only what you need.
+- **Backpressure instead of pile-ups.** Per-backend concurrency bound; above it the router answers `503` with
+  `Retry-After` right away ([details](docs/configuration.md#backpressure)).
+- **Observable.** Prometheus metrics on a separate port, JSON logs, optional `ServiceMonitor` and `NetworkPolicy`.
+- **Signed images.** Released images are signed keyless with [cosign](https://github.com/sigstore/cosign) via GitHub
+  OIDC ([verify](#security)).
+- **Hardened by default.** Non-root containers, no privilege escalation, all capabilities dropped, `RuntimeDefault`
+  seccomp, executable-stack flag cleared on the ONNX Runtime libraries of the TEI base image.
+- **Offline at runtime.** Models are baked into images (`HF_HUB_OFFLINE=1`); model volumes are mounted read-only.
+- **Pinned build inputs.** The Whisper image pins its base image by digest, all Python dependencies, the model
+  revision and the model file's SHA-256; the build fails if any of them changes.
+- **Per-component CalVer releases.** Router, TEI images, models, Whisper and the Helm chart are released
+  independently with [relctl](https://github.com/layer87-labs/relctl).
 
 ## Architecture
 
-### Init Container Pattern (Embedding + Reranker)
-
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  model-init     │────▶│  /model (PVC)    │────▶│  main container │
-│  (bakes model)  │     │  shared volume   │     │  (reads model)  │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
+                        ┌──────────────────────────────────────┐
+  your app ──HTTP──▶    │  inference-router   (Go, :8080)      │ ─▶ :9090/metrics
+  OpenAI-style API      └───────┬───────────────┬──────────────┘
+                                │               │               │
+                   /v1/embeddings         /v1/rerank     /v1/audio/transcriptions
+                                ▼               ▼               ▼
+                        ┌────────────┐  ┌────────────┐  ┌──────────────────┐
+                        │ TEI        │  │ TEI (ONNX) │  │ faster-whisper   │
+                        │ bge-m3     │  │ cross-enc. │  │ large-v3-turbo   │
+                        └─────▲──────┘  └─────▲──────┘  └──────────────────┘
+                              │ /model (ro)   │ /model (ro)   model baked into image
+                      model-init (rsync)  model-init (rsync)
 ```
 
-1. **Init container** copies baked model to PVC via `rsync --ignore-existing`
-2. **Main container** reads model from PVC (mounted read-only)
-3. PVC persists model across restarts (idempotent — no re-copy on restart)
+The router is a pure reverse proxy: it routes by path, bounds concurrency, probes backend health and exports
+metrics. It contains no model logic. The TEI backends read their model from a volume that an init container
+fills from a model baked into its image (idempotent, `rsync --ignore-existing`); Whisper has the model in the
+image itself.
 
-### Whisper (Standalone)
+## Quick start
 
-Model baked into image at build time. No init container or PVC needed. The
-image runs `deploy/whisper/server.py` (faster-whisper behind a small FastAPI
-app) which implements `POST /v1/audio/transcriptions` and
-`/v1/audio/translations` natively, so the router forwards requests unchanged.
-`/health` is answered independently of inference and stays responsive while a
-transcription is running.
+**Try it locally in a minute** (mock backends, no models, needs Go):
 
-### Router (Go Proxy)
+```bash
+make test-local          # builds, starts mock backends + router, runs the end-to-end checks
+```
 
-Pure reverse proxy — routes requests to backends based on path prefix. Zero model logic.
+Or start the pieces by hand and call the API yourself:
 
-## Container Images
+```bash
+make build
+MOCK_TYPE=embedding MOCK_PORT=9101 build/bin/mock-backend &
+EMBEDDING_ENABLED=true EMBEDDING_URL=http://localhost:9101 build/bin/inference-router &
 
-All images are published to `ghcr.io/layer87-labs/`:
+curl http://localhost:8080/v1/embeddings -H 'Content-Type: application/json' \
+  -d '{"model":"BAAI/bge-m3","input":"Hello world"}'
+```
 
-| Image                 | Description                            |
-| --------------------- | -------------------------------------- |
-| `inference-router`    | Go reverse proxy                       |
-| `tei-base`            | Hardened TEI base (patchelf, non-root) |
-| `tei-runtime`         | TEI runtime (model via volume)         |
-| `tei-model-init`      | BGE-M3 model baked, copies to volume   |
-| `tei-reranker-model-init` | Reranker model as ONNX (default: mmarco-mMiniLMv2-L12-H384-v1; option: BGE-reranker-v2-m3) |
-| `reranker-server`     | FlagEmbedding HTTP server              |
-| `whisper`             | Whisper ASR server, model baked in     |
+**Run it for real on Kubernetes** with the Helm chart from the OCI registry. Pick a chart version from the
+[releases](https://github.com/layer87-labs/inference-stack/releases) (tags look like `chart/<version>`):
 
-All images run as non-root with no privilege escalation.
+```yaml
+# values.yaml: everything is off by default, enable what you need
+router:     { enabled: true }
+embedding:  { enabled: true }
+reranker:   { enabled: true }
+whisper:    { enabled: true }
+```
 
-### Verify image signatures
+```bash
+helm install stack oci://ghcr.io/layer87-labs/charts/inference-stack \
+  --version <chart version> --namespace ai --create-namespace -f values.yaml
 
-Images built by the release workflows are signed with
-[cosign](https://github.com/sigstore/cosign) keyless via GitHub OIDC. Verify by
-digest against the exact workflow identity:
+kubectl -n ai port-forward svc/stack-inference-stack-router 8080:8080
+```
+
+The first start takes a while: the init containers copy the models to the volume. Sizing per backend (CPU, memory,
+batch tokens) is in [docs/tuning.md](docs/tuning.md); all chart options are commented in
+[`deploy/helm/values.yaml`](deploy/helm/values.yaml).
+
+## API
+
+| Method and path | Backend | Notes |
+| --- | --- | --- |
+| `POST /v1/embeddings` | embedding | OpenAI-style. The advertised model id `BAAI/bge-m3` may be sent as `model`. |
+| `POST /embed`, `POST /embed_sparse` | embedding | TEI native (dense and sparse) |
+| `POST /v1/rerank`, `POST /rerank` | reranker | `/v1/rerank` is rewritten to TEI's `/rerank` |
+| `POST /v1/audio/transcriptions` | whisper | multipart; `json`, `text`, `verbose_json`, `srt`, `vtt` |
+| `POST /v1/audio/translations` | whisper | exposed, but `large-v3-turbo` is not trained for translation |
+| `GET /v1/models` | all enabled | merged list incl. `limits` of embedding and reranker |
+| `GET /healthz`, `GET /readyz` | router | per-backend status, always HTTP 200 (`ok` or `degraded`) |
+| `GET :9090/metrics` | router | Prometheus |
+
+```bash
+curl http://localhost:8080/v1/rerank -H 'Content-Type: application/json' \
+  -d '{"query":"What is Go?","texts":["Go is a language","Python is a language"]}'
+
+curl http://localhost:8080/v1/audio/transcriptions -F model=whisper-large-v3-turbo -F file=@audio.mp3
+```
+
+A disabled backend answers `503 backend_disabled`; an unreachable one `502 upstream_error`; one at its
+concurrency bound `503 backend_overloaded` with `Retry-After`.
+
+## Components and images
+
+| Component | Image(s) in `ghcr.io/layer87-labs/` | Purpose |
+| --- | --- | --- |
+| router | `inference-router` | Go reverse proxy on a minimal static base image (no shell) |
+| tei | `tei-base`, `tei-runtime` | Hardened TEI CPU base and runtime (model via volume) |
+| embedding-model | `tei-model-init` | `BAAI/bge-m3` baked in, copies to the volume |
+| reranker-model | `tei-reranker-model-init` | Reranker as ONNX: `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` (default) or `BAAI/bge-reranker-v2-m3` |
+| whisper | `whisper` | faster-whisper server, `large-v3-turbo` baked in |
+| chart | `charts/inference-stack` (OCI) | Helm chart |
+
+Why the default reranker is the small model: on 4 CPUs it needs 0.76 to 0.85 s for 20 documents of 800
+characters, against 8.3 to 11.9 s for `bge-reranker-v2-m3`. Method and quality numbers are in
+[docs/tuning.md](docs/tuning.md#reranker-model-choice).
+
+## Security
+
+Container images from the release pipeline are signed keyless with cosign. Verify by digest against the exact
+workflow identity:
 
 ```bash
 IMAGE=ghcr.io/layer87-labs/inference-router
@@ -130,290 +156,33 @@ cosign verify \
   "$IMAGE@$DIGEST"
 ```
 
-`release.yml` signs `inference-router`, `tei-base` and `tei-runtime`.
-`release-models.yml` signs `tei-model-init`, `tei-reranker-model-init` and
-`whisper`; for those, use the identity
-`https://github.com/layer87-labs/inference-stack/.github/workflows/release-models.yml@refs/heads/main`
-(for manual runs, the ref is the branch the workflow was started from).
-Images published before signing was added are unsigned.
+Model and Whisper images published earlier were signed by the separate `release-models.yml` workflow (same
+command, that workflow file as identity). Images published before signing was added are
+unsigned. The Helm chart is not signed.
 
-## Build
+Runtime posture of the chart defaults: non-root users (uid 65532 for the router, 1000 for the rest),
+`allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, `seccompProfile: RuntimeDefault`, a read-only root
+filesystem for the router, read-only model mounts, and no outbound network calls needed at runtime. An optional
+`NetworkPolicy` restricts the router.
+
+## Documentation
+
+- [docs/configuration.md](docs/configuration.md): environment variables, backpressure, health endpoints, metrics
+- [docs/tuning.md](docs/tuning.md): CPU sizing, reranker model choice and measurements, Whisper options, scheduling
+- [docs/ADR-001-tei-for-reranking.md](docs/ADR-001-tei-for-reranking.md): why reranking runs on TEI
+- [AGENTS.md](AGENTS.md): repository layout, build and test commands, release components
+
+## Contributing
 
 ```bash
-# Go binary
-make build
-
-# All container images
-make docker
-
-# Push to registry
-make push REGISTRY=ghcr.io/layer87-labs VERSION=202611.3.1
+make test        # go test -race ./...
+make lint        # golangci-lint
+make test-local  # end-to-end test against mock backends
 ```
 
-## Releases
-
-The router, TEI images, embedding model, reranker models, Whisper and the Helm chart are released
-independently as [relctl](https://github.com/layer87-labs/relctl) components with CalVer versions
-(`YYYYMM.D.N`, tag `<component>/<version>`). Only the parts whose files changed are built on a merge to
-`main`. See `AGENTS.md` for the component table and image tag formats.
-
-## Metrics
-
-Prometheus metrics on `:9090/metrics`:
-
-- `inference_router_requests_total` — total requests by backend/path/status
-- `inference_router_request_duration_seconds` — latency histogram
-- `inference_router_active_requests` — in-flight requests
-- `inference_router_backend_up` — backend health (0/1)
-- `inference_router_upstream_errors_total` — upstream error counts
-
-## CPU Tuning
-
-### Embedding (TEI + BGE-M3)
-
-| `--max-batch-tokens` | RSS (fp32) | Recommendation       |
-| -------------------- | ---------- | -------------------- |
-| 4096                 | 3-6Gi      | **CPU default**      |
-| 8192                 | 6-10Gi     | May OOM on 8Gi limit |
-| 16384                | 10-16Gi    | GPU-only             |
-
-### Reranker model choice
-
-The reranker model is baked into the `tei-reranker-model-init` image and
-selected by its tag (`reranker.modelInit.image.tag`). Both models run on the
-same TEI runtime with the ONNX Runtime backend.
-
-Measured with TEI `cpu-1.9.4`, limited to 4 CPUs, `--max-batch-tokens 2048`,
-one `/rerank` request with one query and 20 documents of 800 characters each
-(German/English mix), 4 runs per model. The CPU was an older AVX2 machine, so
-only the ratios carry over.
-
-| Model                                                  | Format                    | Parameters | Latency (20 docs) |
-| ------------------------------------------------------ | ------------------------- | ---------- | ----------------- |
-| `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` (default) | fp32 ONNX                 | 118M       | 0.76 to 0.85 s    |
-| `BAAI/bge-reranker-v2-m3`                              | fp32 ONNX                 | 568M       | 8.3 to 11.9 s     |
-| `BAAI/bge-reranker-v2-m3`                              | int8 ONNX                 | 568M       | 7.9 to 8.2 s      |
-| `Alibaba-NLP/gte-multilingual-reranker-base`           | safetensors (candle path) | n/a        | 11.1 to 12.1 s    |
-
-That is about 0.04 s per document pair for the default against roughly 0.4 to
-0.5 s for `bge-reranker-v2-m3`, so reranking 40 candidates with the larger
-model does not fit an interactive latency budget on 4 CPUs.
-
-Quality, on a downstream 75-question German/English relevance set (hybrid
-retrieval, rerank the top 20 candidates, 800 characters per document):
-
-| Setup                                      | hit@1 | hit@5 | hit@10 |
-| ------------------------------------------ | ----- | ----- | ------ |
-| No rerank                                  | 77%   | 95%   | 96%    |
-| `BAAI/bge-reranker-v2-m3`                  | 92%   | 96%   | 96%    |
-| `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | 92%   | 96%   | 96%    |
-
-This set is small and saturated (one question is 1.3 points), its documents
-were short, and the embeddings used for candidate retrieval were a simple
-stand-in, so it cannot separate the two models. Real-world German technical
-text may favour the larger model; measure on your own data if quality matters
-more than latency.
-
-#### Sizing the request for the default model
-
-Latency is dominated by the number of passages and their length, and one
-request already uses all CPUs, so concurrent requests queue. Measured with the
-default model on a 4-vCPU pod (TEI `cpu-1.9.4`, `--max-batch-tokens 2048`),
-75 queries, passages of title plus text cut to the given length (800
-characters are about 190 tokens, 500 about 120), p95 latency of one `/rerank`
-call:
-
-| Passages | 800 chars | 600 chars | 500 chars | 400 chars |
-| -------- | --------- | --------- | --------- | --------- |
-| 40       | 3.2 s     | 2.5 s     | 2.1 s     | 1.8 s     |
-| 30       | 2.4 s     | 1.9 s     | 1.7 s     | 1.4 s     |
-| 20       | 1.7 s     | 1.3 s     | 1.1 s     | 1.0 s     |
-| 15       | 1.3 s     | 1.0 s     | 0.9 s     | 0.7 s     |
-
-With four such requests in flight at once, p95 is about 3 to 4 times higher
-(for example 3.0 s for 15 passages of 500 characters, 6.4 s for 40 of 400).
-If the budget is about 1.5 s per request, send at most 15 to 20 passages of
-about 500 characters, and scale out (`reranker.replicaCount`) or add CPU for
-concurrent callers. Reranking a short list also bounds what it can gain: it can
-only reorder the passages it receives.
-
-Memory: the working set stayed at about 1.4 GiB, including four concurrent
-requests of 40 passages, so the chart defaults to a 1.5 GiB request and a 2 GiB
-limit. Inputs longer than the model's 512-token limit are truncated by default
-(`truncate: true`, or the TEI default when the field is omitted); with
-`truncate: false` the request fails with HTTP 422.
-
-The model repository also ships quantised ONNX variants (for example
-`onnx/model_qint8_avx512_vnni.onnx`, `onnx/model_quint8_avx2.onnx`). They are
-not used by this chart and were not measured; they are CPU-specific and
-would need to be baked as `onnx/model.onnx` for TEI.
-
-Licence: `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` is Apache-2.0,
-`BAAI/bge-reranker-v2-m3` is Apache-2.0 as well (as tagged on the Hugging Face hub); check the model card of
-anything else you select.
-
-To use the higher-quality model (more CPU or a GPU), build or pull the matching
-init image and set:
-
-```yaml
-reranker:
-  modelName: "BAAI/bge-reranker-v2-m3"
-  modelInit:
-    image:
-      tag: "bge-reranker-v2-m3-<version>"   # e.g. bge-reranker-v2-m3-202611.3.1, see the published tags
-```
-
-The init step copies with `--ignore-existing`, so when you change the model on
-an existing release, delete the reranker model PVC (or install with
-`reranker.persistence.enabled=false`) so the old model files are not reused.
-`BAAI/bge-reranker-v2-m3` needs `requests: 4Gi` / `limits: 8Gi` memory with
-`--max-batch-tokens 2048`; the default model needs far less.
-
-To build an init image yourself: `make docker/tei-reranker-model-init
-RERANKER_MODEL_ID=<huggingface id>`. If the model repository ships
-`onnx/model.onnx` it is used as-is; otherwise the model is exported with
-Optimum. Only XLM-RoBERTa-style sequence-classification models that TEI
-supports will work.
-
-### Whisper (faster-whisper + large-v3-turbo, int8)
-
-Measured on CPU: ~2.0 GiB RSS peak; roughly real-time speed on 2 threads (a
-3.7 min recording took 3.3 min), faster with more threads.
-
-- `whisper.cpuThreads` must match the CPU limit (CTranslate2 sizes itself by
-  the node's cores, not by the cgroup limit).
-- Transcriptions run one at a time; further requests queue in the server. Keep
-  the router's `WHISPER_TIMEOUT` (default `300s`) above queue time + runtime,
-  e.g. via `router.extraEnv`.
-- Upload limit: `whisper.maxUploadMB` (default 100). Formats: anything FFmpeg
-  decodes (wav, mp3, m4a, ogg, flac, webm, mp4, ...).
-- `response_format`: `json` (default), `text`, `verbose_json`, `srt`, `vtt`.
-- Set `whisper.language` (e.g. `de`) to skip language auto-detection; a
-  request's own `language` field wins.
-- Vocabulary hints, two mechanisms (both optional, both off by default):
-  - `prompt` (form field, OpenAI-compatible) becomes faster-whisper's
-    `initial_prompt`. Set a server-side default with `whisper.initialPrompt`
-    (`WHISPER_INITIAL_PROMPT`) for clients that send no prompt (e.g. an STT
-    integration that only sends `model` and `language`). A request prompt is
-    **appended** to the default (`<default> <request>`): Whisper weighs the end
-    of the prompt most, and an over-long prompt is cut from the front, so the
-    request-specific text survives. Whisper reads at most 223 tokens
-    (`max_length // 2 - 1`); faster-whisper keeps the last 223 and drops the
-    rest. The server additionally caps the combined text at 2000 characters
-    (tail kept).
-  - `hotwords` (form field, extension; free text such as
-    `Kubernetes Grafana Postgres`) is passed to faster-whisper's `hotwords`.
-    Server default: `whisper.hotwords` (`WHISPER_HOTWORDS`). A request's
-    `hotwords` **replaces** the default (no merging). faster-whisper puts the
-    hotwords in front of the previous-text prompt; it ignores them only when
-    `prefix` is set, which this server never sets, so `prompt` and `hotwords`
-    work together (checked in `faster_whisper/transcribe.py`, `get_prompt`,
-    version 1.2.1). Both count against the same 223-token window of their own.
-  - Neutral example for `whisper.initialPrompt`:
-    `Release notes for Kubernetes, PostgreSQL and Grafana.`
-  - Hints raise the odds of a spelling; they do not guarantee it. Keep them
-    short and spell terms the way they should appear.
-- Repetition loops on long audio: the sequential decoder conditions every
-  window on the previous text and can get stuck repeating itself. The server
-  therefore (1) keeps `condition_on_previous_text` off by default
-  (`whisper.conditionOnPreviousText`), (2) sends audio longer than
-  `whisper.batchThresholdSeconds` (default 35 s, `WHISPER_BATCH_THRESHOLD_S`)
-  through faster-whisper's `BatchedInferencePipeline` (VAD-cut chunks decoded
-  independently, `whisper.batchSize` = 8, `WHISPER_BATCH_SIZE`), and (3) uses
-  faster-whisper's temperature fallback (0.0, 0.2, ... 1.0 with its default
-  compression-ratio, log-prob and no-speech thresholds) on the sequential
-  path. The batched path always uses VAD and only the first temperature (the
-  library does not fall back there). A request's explicit `temperature` form
-  field (including `0`) is used as given, without fallback; clients that always
-  send `temperature=0` therefore get no fallback on the sequential path.
-  Measured locally (FLEURS de, int8, 4 threads, beam 1, VAD): three 55-88 s
-  clips WER 3.1 % instead of 42 % (one clip looped to 256 instead of 120
-  words) and 56 s of audio in 17.8 s instead of 27.2 s; 40 single clips
-  5.6 % vs 5.2 % (noise); no speed difference on short clips.
-- Warmup: after loading the model the server runs a 2 s synthetic clip through
-  VAD and decoder (`WHISPER_WARMUP`, default `true`) so the first real request
-  does not pay the initialisation cost. `/health` returns 503 until model and
-  warmup are done; a failed warmup is logged and does not block startup.
-- Model source and pins: the image bakes `large-v3-turbo` from
-  `dropbox-dash/faster-whisper-large-v3-turbo` at a fixed commit
-  (`WHISPER_MODEL_REVISION` in `deploy/Containerfile.whisper`) and verifies
-  `model.bin` against its SHA-256; the build fails if either changes. This is
-  the repository faster-whisper's `large-v3-turbo` alias
-  (`mobiuslabsgmbh/faster-whisper-large-v3-turbo`) redirects to (HTTP 307);
-  `Systran/faster-whisper-large-v3-turbo` answers HTTP 401. Model license: MIT.
-  Python dependencies are pinned in `deploy/whisper/requirements.txt` (`av`
-  must stay on 16.x, newer majors break faster-whisper 1.2.1) and the base
-  image by digest.
-- Per-request log line (JSON after the prefix `whisper_request`), e.g.
-  `whisper_request {"status":"ok","path":"standard","audio_s":9.0,"prep_s":0.4,"infer_s":7.6,"total_s":8.1,"rtf":0.889,...}`:
-  audio duration (`audio_s`, `audio_after_vad_s`), upload, queue wait, decode +
-  VAD (`prep_s`) and inference (`infer_s`) time, real-time factor
-  (`rtf = (prep_s + infer_s) / audio_s`), model, language, `beam_size`, `vad`, `path` (`standard|batched`),
-  `temperature_mode` (`fallback|fixed`),
-  file size, and `prompt_chars` / `hotwords_chars` / `prompt_source`
-  (`none|default|request|both`). Prompt, hotwords and transcript text are
-  never logged.
-- `/v1/audio/translations` (to English) is exposed, but large-v3-turbo is not
-  trained for translation; use a non-turbo model for that.
-
-### Scheduling (`affinity`, `topologySpreadConstraints`)
-
-`embedding` and `whisper` accept optional `affinity` and
-`topologySpreadConstraints` (empty by default, so the rendered manifests do not
-change). With `embedding.replicaCount > 1` the replicas can land on one node,
-and then the PodDisruptionBudget does not protect against a node failure.
-Example, soft spreading that never blocks scheduling:
-
-```yaml
-embedding:
-  replicaCount: 2
-  affinity:
-    podAntiAffinity:
-      preferredDuringSchedulingIgnoredDuringExecution:
-        - weight: 100
-          podAffinityTerm:
-            topologyKey: kubernetes.io/hostname
-            labelSelector:
-              matchLabels:
-                app.kubernetes.io/component: embedding
-  topologySpreadConstraints:
-    - maxSkew: 1
-      topologyKey: kubernetes.io/hostname
-      whenUnsatisfiable: ScheduleAnyway
-      labelSelector:
-        matchLabels:
-          app.kubernetes.io/component: embedding
-```
-
-## Environment Variables
-
-| Variable               | Default | Description                   |
-| ---------------------- | ------- | ----------------------------- |
-| `ROUTER_ADDR`          | `:8080` | Main listen address           |
-| `ROUTER_METRICS_ADDR`  | `:9090` | Prometheus metrics address    |
-| `ROUTER_READ_TIMEOUT`  | `120s`  | HTTP read timeout             |
-| `ROUTER_WRITE_TIMEOUT` | `300s`  | HTTP write timeout            |
-| `EMBEDDING_ENABLED`    | `false` | Enable embedding backend      |
-| `EMBEDDING_URL`        | —       | Base URL for TEI embedding    |
-| `EMBEDDING_TIMEOUT`    | `60s`   | Per-request timeout           |
-| `RERANKER_ENABLED`     | `false` | Enable reranker backend       |
-| `RERANKER_URL`         | —       | Base URL for reranker         |
-| `RERANKER_TIMEOUT`     | `30s`   | Per-request timeout           |
-| `WHISPER_ENABLED`      | `false` | Enable Whisper backend        |
-| `WHISPER_URL`          | —       | Base URL for Whisper          |
-| `WHISPER_TIMEOUT`      | `300s`  | Per-request timeout           |
-| `LOG_LEVEL`            | `info`  | `debug`/`info`/`warn`/`error` |
-| `LOG_FORMAT`           | `json`  | `json`/`console`              |
-
-## Security
-
-- All containers run as non-root (uid 1000 or 65532)
-- `allowPrivilegeEscalation: false`
-- `capabilities: drop: [ALL]`
-- ONNX Runtime exec-stack flag cleared via patchelf
-- No outbound network calls at runtime (`HF_HUB_OFFLINE=1`)
-- Router image uses distroless base (no shell)
+Pull requests are welcome. Releases are cut automatically from `main`
+per component, see [AGENTS.md](AGENTS.md#container-image-versioning).
 
 ## License
 
-[Apache License 2.0](LICENSE)
+[Apache License 2.0](LICENSE). The models have their own licenses: check the model cards of the models you use.
