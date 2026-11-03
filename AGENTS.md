@@ -101,7 +101,7 @@ Key details:
 
 ### Whisper (Standalone)
 
-Model is baked directly into the image at build time. No init container, no PVC needed. The image runs `deploy/whisper/server.py`, which speaks the OpenAI audio API itself (the router forwards paths unchanged). `/health` does not queue behind inference. Pin `av` (see Containerfile) — newer PyAV majors break faster-whisper. Each request logs one JSON line (`whisper_request`, timings, RTF; never prompt/transcript text). `WHISPER_INITIAL_PROMPT` / `WHISPER_HOTWORDS` are server-side defaults (see README). Tests: `pytest deploy/whisper` (stubbed model).
+Model is baked directly into the image at build time. No init container, no PVC needed. The image runs `deploy/whisper/server.py`, which speaks the OpenAI audio API itself (the router forwards paths unchanged). `/health` does not queue behind inference. Pin `av` (see Containerfile) — newer PyAV majors break faster-whisper. Each request logs one JSON line (`whisper_request`, timings, RTF; never prompt/transcript text). `WHISPER_INITIAL_PROMPT` / `WHISPER_HOTWORDS` are server-side defaults (see docs/tuning.md). Tests: `pytest deploy/whisper` (stubbed model).
 
 ### Router (Go Proxy)
 
@@ -137,7 +137,7 @@ make docker/whisper                   # whisper
 
 ## Tech Stack & Constraints
 
-- **Go 1.24+** — no generics workarounds needed
+- **Go 1.26** (see `go.mod`)
 - **`net/http/httptest`** for all tests — no external test frameworks (no testify, no gomock)
 - **`go.uber.org/zap`** for structured logging
 - **`github.com/prometheus/client_golang`** for metrics
@@ -228,7 +228,7 @@ It exposes `/health`, `/v1/models`, and the backend-specific inference endpoints
 - `promauto` metrics panic on double-registration. If you add a new metric, add it to `internal/metrics/metrics.go` as a package-level var, not inside a function.
 - `health.Checker` must be initialised with `health.New(cfg.EnabledBackends(), log)` — passing `cfg.ActiveBackends()` will include disabled backends and skew the health response.
 - The `statusWriter` wrapper in `proxy.go` must set `status = 200` lazily (in `Write`) to handle the case where `WriteHeader` is never called explicitly.
-- TEI does **not** support reranking — the reranker uses FlagEmbedding, not TEI.
+- Reranking runs on TEI (ONNX, see `docs/ADR-001-tei-for-reranking.md`). `deploy/Containerfile.reranker-server` and `deploy/reranker/` are the legacy FlagEmbedding server and are not released any more.
 - Some CSI volumes don't support timestamp preservation — always use `rsync -rlgoDv`, never `rsync -a`.
 - Pod `fsGroup: 1000` is required for init containers to write to PVCs (CSI provisions volumes as root).
 
@@ -250,8 +250,11 @@ It exposes `/health`, `/v1/models`, and the backend-specific inference endpoints
 | `EMBEDDING_URL` | — | Base URL for TEI embedding |
 | `EMBEDDING_TIMEOUT` | `60s` | Per-request timeout |
 | `RERANKER_ENABLED` | `false` | Enable reranker backend |
-| `RERANKER_URL` | — | Base URL for FlagEmbedding reranker |
+| `RERANKER_URL` | — | Base URL for the TEI reranker |
 | `RERANKER_TIMEOUT` | `30s` | Per-request timeout |
 | `WHISPER_ENABLED` | `false` | Enable Whisper backend |
 | `WHISPER_URL` | — | Base URL for Whisper |
 | `WHISPER_TIMEOUT` | `300s` | Per-request timeout |
+| `EMBEDDING_MAX_CONCURRENT` / `RERANKER_MAX_CONCURRENT` / `WHISPER_MAX_CONCURRENT` | `20` / `20` / `8` | Concurrency bound per backend; above it the router answers `503` + `Retry-After` |
+
+User-facing documentation: `README.md`, `docs/configuration.md`, `docs/tuning.md`.
