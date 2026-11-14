@@ -77,6 +77,12 @@ spec:
         - name: PARAKEET_URL
           value: "http://{{ include "inference-stack.fullname" . }}-parakeet:{{ .Values.parakeet.service.port }}"
         {{- end }}
+        {{- range $name, $json := .Values.router.capabilities }}
+        {{- if $json }}
+        - name: {{ upper $name }}_CAPABILITIES
+          value: {{ $json | trim | quote }}
+        {{- end }}
+        {{- end }}
         {{- with .Values.router.extraEnv }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

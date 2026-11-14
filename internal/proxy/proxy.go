@@ -122,6 +122,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	case path == "/v1/models" || path == "/v1/models/":
 		r.handleModels(w, req)
 
+	case strings.HasPrefix(path, "/v1/models/") && req.Method == http.MethodGet:
+		r.handleModel(w, strings.TrimPrefix(path, "/v1/models/"))
+
 	case strings.HasPrefix(path, "/v1/embeddings") || path == "/embed" || path == "/embed_sparse":
 		if strings.HasPrefix(path, "/v1/embeddings") {
 			r.stripAdvertisedModel(req, r.cfg.Embedding)
@@ -239,6 +242,9 @@ type modelObj struct {
 	Created int64        `json:"created"`
 	OwnedBy string       `json:"owned_by"`
 	Limits  *modelLimits `json:"limits,omitempty"`
+	// Capabilities say what the model can do (prompt, word timestamps, longest
+	// audio, ...), from the backend's configuration. Additive field.
+	Capabilities *config.Capabilities `json:"capabilities,omitempty"`
 }
 
 // modelLimits are the request-size limits of the running backend, read from
@@ -392,7 +398,31 @@ type modelsResp struct {
 }
 
 // handleModels returns a merged model list from all enabled backends.
-func (r *Router) handleModels(w http.ResponseWriter, req *http.Request) {
+func (r *Router) handleModels(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(modelsResp{Object: "list", Data: r.collectModels()})
+}
+
+// handleModel serves GET /v1/models/{id}: one entry of the merged list, in the
+// OpenAI shape, or a 404 error object.
+func (r *Router) handleModel(w http.ResponseWriter, id string) {
+	for _, m := range r.collectModels() {
+		if m.ID == id {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(m)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+		"message": "model not found", "type": "invalid_request_error", "code": "model_not_found",
+	}})
+}
+
+// collectModels merges the model lists of all enabled backends and attaches
+// each backend's limits and capabilities.
+func (r *Router) collectModels() []modelObj {
 	var models []modelObj
 	client := &http.Client{Timeout: 5 * time.Second}
 
@@ -401,20 +431,20 @@ func (r *Router) handleModels(w http.ResponseWriter, req *http.Request) {
 		if err != nil {
 			r.log.Warn("failed to fetch models from backend",
 				zap.String("backend", b.Name), zap.Error(err))
-			models = append(models, r.staticModels(b)...)
+			models = append(models, r.withCapabilities(b, r.staticModels(b))...)
 			continue
 		}
 
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 		_ = resp.Body.Close()
 		if err != nil || resp.StatusCode != http.StatusOK {
-			models = append(models, r.staticModels(b)...)
+			models = append(models, r.withCapabilities(b, r.staticModels(b))...)
 			continue
 		}
 
 		var upstreamResp modelsResp
 		if err := json.Unmarshal(body, &upstreamResp); err != nil {
-			models = append(models, r.staticModels(b)...)
+			models = append(models, r.withCapabilities(b, r.staticModels(b))...)
 			continue
 		}
 
@@ -427,11 +457,19 @@ func (r *Router) handleModels(w http.ResponseWriter, req *http.Request) {
 				valid[i].Limits = limits
 			}
 		}
-		models = append(models, valid...)
+		models = append(models, r.withCapabilities(b, valid)...)
 	}
+	return models
+}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(modelsResp{Object: "list", Data: models})
+// withCapabilities sets the backend's configured capabilities on its models.
+func (r *Router) withCapabilities(b config.Backend, ms []modelObj) []modelObj {
+	// Always set, also to nil: what a backend claims about itself on
+	// /v1/models is never passed through, the configuration decides.
+	for i := range ms {
+		ms[i].Capabilities = b.Capabilities
+	}
+	return ms
 }
 
 // validateModels filters out entries with an unusable "id".

@@ -721,7 +721,7 @@ func asrBackends(t *testing.T) (cfg *config.Config, got map[string]string) {
 			"/v1/audio/transcriptions": func(w http.ResponseWriter, r *http.Request) {
 				b, _ := io.ReadAll(r.Body)
 				got[name] = string(b)
-				jsonOK(`{"text":"` + name + `"}`)(w, r)
+				jsonOK(`{"text":"`+name+`"}`)(w, r)
 			},
 			"/v1/audio/translations": jsonOK(`{"text":"` + name + `"}`),
 		})
@@ -819,5 +819,95 @@ func TestRouting_TranslationsStayOnWhisper(t *testing.T) {
 	router.ServeHTTP(w, req)
 	if w.Body.String() != `{"text":"whisper"}` {
 		t.Errorf("got %s, want whisper", w.Body.String())
+	}
+}
+
+// ── Capabilities ──────────────────────────────────────────────────────────────
+
+func capabilityConfig(whisperURL, embedURL string) *config.Config {
+	return buildConfig(
+		config.Backend{Name: "embedding", BaseURL: embedURL, Enabled: true, Timeout: 5 * time.Second, Models: []string{"BAAI/bge-m3"},
+			Capabilities: &config.Capabilities{Tasks: []string{"embed"}}},
+		config.Backend{Name: "reranker"},
+		config.Backend{Name: "whisper", BaseURL: whisperURL, Enabled: true, Timeout: 5 * time.Second,
+			Capabilities: &config.Capabilities{Tasks: []string{"transcribe"}, Audio: &config.AudioCapabilities{
+				Prompt: true, Hotwords: true, WordTimes: true, MaxSeconds: 900}}},
+	)
+}
+
+func TestModels_CarryConfiguredCapabilities(t *testing.T) {
+	whisper := mockBackend(t, map[string]http.HandlerFunc{
+		// The backend claims capabilities of its own: they must not pass through.
+		"/v1/models": jsonOK(`{"object":"list","data":[{"id":"whisper-large-v3","object":"model","created":1,"owned_by":"x","capabilities":{"tasks":["lie"]}}]}`),
+	})
+	embed := mockBackend(t, map[string]http.HandlerFunc{"/v1/models": func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) }})
+	router := buildRouter(t, capabilityConfig(whisper.URL, embed.URL))
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	var resp struct {
+		Data []struct {
+			ID           string `json:"id"`
+			Capabilities *struct {
+				Tasks []string `json:"tasks"`
+				Audio *struct {
+					Prompt     bool `json:"prompt"`
+					Hotwords   bool `json:"hotwords"`
+					WordTimes  bool `json:"word_times"`
+					MaxSeconds int  `json:"max_seconds"`
+				} `json:"audio"`
+			} `json:"capabilities"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || len(resp.Data) != 2 {
+		t.Fatalf("%v\n%s", err, w.Body.String())
+	}
+	byID := map[string]int{}
+	for i, m := range resp.Data {
+		byID[m.ID] = i
+	}
+	wm := resp.Data[byID["whisper-large-v3"]]
+	if wm.Capabilities == nil || !reflect.DeepEqual(wm.Capabilities.Tasks, []string{"transcribe"}) || wm.Capabilities.Audio == nil ||
+		!wm.Capabilities.Audio.Prompt || !wm.Capabilities.Audio.Hotwords || wm.Capabilities.Audio.MaxSeconds != 900 {
+		t.Fatalf("whisper: %+v", wm.Capabilities)
+	}
+	// The embedding backend failed upstream: static fallback still carries them.
+	em := resp.Data[byID["BAAI/bge-m3"]]
+	if em.Capabilities == nil || !reflect.DeepEqual(em.Capabilities.Tasks, []string{"embed"}) || em.Capabilities.Audio != nil {
+		t.Fatalf("embedding: %+v", em.Capabilities)
+	}
+}
+
+func TestModels_NoCapabilitiesWhenNotConfigured(t *testing.T) {
+	whisper := mockBackend(t, map[string]http.HandlerFunc{"/v1/models": jsonOK(modelsJSON("whisper-large-v3"))})
+	cfg := buildConfig(config.Backend{}, config.Backend{}, config.Backend{Name: "whisper", BaseURL: whisper.URL, Enabled: true, Timeout: 5 * time.Second})
+	w := httptest.NewRecorder()
+	buildRouter(t, cfg).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if strings.Contains(w.Body.String(), "capabilities") {
+		t.Fatalf("field present without configuration: %s", w.Body.String())
+	}
+}
+
+func TestModelByID(t *testing.T) {
+	whisper := mockBackend(t, map[string]http.HandlerFunc{"/v1/models": jsonOK(modelsJSON("whisper-large-v3"))})
+	embed := mockBackend(t, map[string]http.HandlerFunc{"/v1/models": jsonOK(modelsJSON("BAAI/bge-m3"))})
+	router := buildRouter(t, capabilityConfig(whisper.URL, embed.URL))
+
+	for _, id := range []string{"whisper-large-v3", "BAAI/bge-m3"} { // ids may contain a slash
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/models/"+id, nil))
+		var m struct {
+			ID           string          `json:"id"`
+			Object       string          `json:"object"`
+			Capabilities json.RawMessage `json:"capabilities"`
+		}
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &m) != nil || m.ID != id || m.Object != "model" || len(m.Capabilities) == 0 {
+			t.Fatalf("%s: %d %s", id, w.Code, w.Body.String())
+		}
+	}
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/models/nope", nil))
+	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "model_not_found") {
+		t.Fatalf("unknown id: %d %s", w.Code, w.Body.String())
 	}
 }

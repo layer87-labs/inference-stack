@@ -27,6 +27,11 @@ type Backend struct {
 	// under load. 0 or negative disables the limit (unbounded passthrough,
 	// the previous behavior).
 	MaxConcurrent int
+
+	// Capabilities are published on /v1/models for the models of this
+	// backend (nil: not published). Defaults for the bundled backends can be
+	// replaced with <NAME>_CAPABILITIES (JSON).
+	Capabilities *Capabilities
 }
 
 // Config holds all runtime configuration for the inference router.
@@ -111,6 +116,23 @@ func Load() (*Config, error) {
 			// (429 beyond that); this bound only stops a pile-up in the router.
 			MaxConcurrent: envInt("PARAKEET_MAX_CONCURRENT", 6),
 		},
+	}
+
+	for _, c := range []struct {
+		b   *Backend
+		key string
+		def *Capabilities
+	}{
+		{&cfg.Embedding, "EMBEDDING_CAPABILITIES", embeddingCapabilities()},
+		{&cfg.Reranker, "RERANKER_CAPABILITIES", rerankerCapabilities()},
+		{&cfg.Whisper, "WHISPER_CAPABILITIES", whisperCapabilities()},
+		{&cfg.Parakeet, "PARAKEET_CAPABILITIES", parakeetCapabilities()},
+	} {
+		caps, err := capabilitiesFromEnv(c.key, c.def)
+		if err != nil {
+			return nil, err
+		}
+		c.b.Capabilities = caps
 	}
 
 	if err := cfg.validate(); err != nil {
