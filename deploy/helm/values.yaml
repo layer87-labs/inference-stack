@@ -49,6 +49,13 @@ router:
 
   healthCheckInterval: "15s"
 
+  # Capabilities published on /v1/models and /v1/models/{id} per backend. The
+  # router has defaults that match the bundled servers; set a backend's key
+  # (embedding, reranker, whisper, parakeet) to a JSON document to replace
+  # them, for example when you changed a server limit:
+  #   whisper: '{"tasks":["transcribe"],"audio":{"prompt":true,"hotwords":true,"word_times":true,"segment_times":true,"max_bytes":52428800}}'
+  capabilities: {}
+
   # Extra environment variables for the router, e.g. to tune per-backend
   # timeouts (WHISPER_TIMEOUT, ROUTER_WRITE_TIMEOUT, ...). List of EnvVar.
   extraEnv: []

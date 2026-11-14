@@ -112,7 +112,7 @@ batch tokens) is in [docs/tuning.md](docs/tuning.md); all chart options are comm
 | `POST /v1/rerank`, `POST /rerank` | reranker | `/v1/rerank` is rewritten to TEI's `/rerank` |
 | `POST /v1/audio/transcriptions` | whisper, parakeet | multipart; `json`, `text`, `verbose_json`, `srt`, `vtt`. Goes to parakeet only when it is enabled and `model` is `parakeet-tdt-0.6b-v3` |
 | `POST /v1/audio/translations` | whisper | exposed, but `large-v3-turbo` is not trained for translation |
-| `GET /v1/models` | all enabled | merged list incl. `limits` of embedding and reranker |
+| `GET /v1/models`, `GET /v1/models/{id}` | all enabled | merged list incl. `limits` of embedding and reranker and the [`capabilities`](#model-capabilities) of every model |
 | `GET /healthz`, `GET /readyz` | router | per-backend status, always HTTP 200 (`ok` or `degraded`) |
 | `GET :9090/metrics` | router | Prometheus |
 
@@ -125,6 +125,28 @@ curl http://localhost:8080/v1/audio/transcriptions -F model=whisper-large-v3-tur
 
 A disabled backend answers `503 backend_disabled`; an unreachable one `502 upstream_error`; one at its
 concurrency bound `503 backend_overloaded` with `Retry-After`.
+
+## Model capabilities
+
+Every entry of `GET /v1/models` (and `GET /v1/models/{id}`) carries an additive `capabilities` object so that a client can adapt to the model behind the router instead of guessing from its name. The values come from the router's configuration, never from what a backend claims about itself. Defaults match the bundled servers; replace them per backend with `<NAME>_CAPABILITIES` (JSON, `NAME` one of `EMBEDDING`, `RERANKER`, `WHISPER`, `PARAKEET`) or `router.capabilities.<backend>` in the chart. A malformed value stops the router at start.
+
+```json
+{
+  "id": "parakeet-tdt-0.6b-v3",
+  "object": "model",
+  "capabilities": {
+    "tasks": ["transcribe"],
+    "audio": {
+      "prompt": false, "hotwords": false,
+      "word_times": true, "segment_times": true, "confidence": true,
+      "auto_language": true, "force_language": false,
+      "max_seconds": 120, "max_bytes": 26214400
+    }
+  }
+}
+```
+
+`audio.prompt` and `audio.hotwords` tell a client whether a `prompt` or `hotwords` form field has any effect (a backend may accept and ignore it), `max_seconds` and `max_bytes` are per request (0 or absent: not stated), `languages` lists ISO 639-1 codes when the model has a fixed set. Unknown fields must be ignored by clients.
 
 ## Components and images
 

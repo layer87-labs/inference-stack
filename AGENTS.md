@@ -15,7 +15,7 @@ This file provides context for AI coding agents working in this repository.
 | Whisper ASR | faster-whisper (Python) | large-v3-turbo | `/v1/audio/transcriptions`, `/v1/audio/translations` | `WHISPER_ENABLED`, `WHISPER_URL` |
 | Parakeet ASR | onnx-asr + ONNX Runtime (Python) | parakeet-tdt-0.6b-v3 (int8) | `/v1/audio/transcriptions` when `model` names it | `PARAKEET_ENABLED`, `PARAKEET_URL` |
 
-`/v1/models` returns a merged list from all enabled backends (with static fallback).
+`/v1/models` (and `/v1/models/{id}`) returns a merged list from all enabled backends (with static fallback); each entry carries the configured `capabilities` of its backend (`internal/config/capabilities.go`, override with `<NAME>_CAPABILITIES`).
 
 ---
 
