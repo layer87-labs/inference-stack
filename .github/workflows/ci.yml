@@ -55,3 +55,32 @@ jobs:
 
       - name: Test
         run: pytest -q deploy/whisper
+
+  # ── Python: parakeet server tests (fake model, real audio decoding) ───────
+  parakeet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install test dependencies
+        run: |
+          grep -E '^(numpy|av|fastapi|python-multipart)==' deploy/parakeet/requirements.in > /tmp/test-req.txt
+          pip install -r /tmp/test-req.txt httpx pytest
+
+      - name: Test
+        run: pytest -q deploy/parakeet
+
+  # ── Helm: render the chart with optional backends off and on ──────────────
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/setup-helm@v4
+
+      - name: Test
+        run: scripts/test-chart.sh

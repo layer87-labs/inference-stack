@@ -708,3 +708,116 @@ func TestModels_EmbeddingLimits(t *testing.T) {
 		t.Errorf("limits = %+v, want 4096/32/8192", l)
 	}
 }
+
+// ── Parakeet: second transcription backend chosen by model id ─────────────────
+
+// asrBackends starts a Whisper and a Parakeet mock that each record the body
+// they received and answer with their own name.
+func asrBackends(t *testing.T) (cfg *config.Config, got map[string]string) {
+	t.Helper()
+	got = map[string]string{}
+	mk := func(name string) *httptest.Server {
+		return mockBackend(t, map[string]http.HandlerFunc{
+			"/v1/audio/transcriptions": func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				got[name] = string(b)
+				jsonOK(`{"text":"` + name + `"}`)(w, r)
+			},
+			"/v1/audio/translations": jsonOK(`{"text":"` + name + `"}`),
+		})
+	}
+	whisper, parakeet := mk("whisper"), mk("parakeet")
+	cfg = buildConfig(
+		config.Backend{Name: "embedding"},
+		config.Backend{Name: "reranker"},
+		config.Backend{Name: "whisper", BaseURL: whisper.URL, Enabled: true, Timeout: 5 * time.Second,
+			Models: []string{"whisper-large-v3-turbo"}},
+	)
+	cfg.Parakeet = config.Backend{Name: "parakeet", BaseURL: parakeet.URL, Enabled: true, Timeout: 5 * time.Second,
+		Models: []string{"parakeet-tdt-0.6b-v3"}}
+	return cfg, got
+}
+
+func multipartBody(fields ...[2]string) string {
+	var sb strings.Builder
+	for _, f := range fields {
+		if f[0] == "file" {
+			sb.WriteString("--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.webm\"\r\n\r\n" + f[1] + "\r\n")
+			continue
+		}
+		sb.WriteString("--b\r\nContent-Disposition: form-data; name=\"" + f[0] + "\"\r\n\r\n" + f[1] + "\r\n")
+	}
+	sb.WriteString("--b--\r\n")
+	return sb.String()
+}
+
+func TestRouting_TranscriptionByModel(t *testing.T) {
+	audio := strings.Repeat("A", 64<<10) // larger than any read buffer
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"parakeet id, model before file", multipartBody([2]string{"model", "parakeet-tdt-0.6b-v3"}, [2]string{"file", audio}), "parakeet"},
+		{"parakeet id, model after file", multipartBody([2]string{"file", audio}, [2]string{"model", "parakeet-tdt-0.6b-v3"}), "parakeet"},
+		{"parakeet id with provider prefix", multipartBody([2]string{"model", "gateway/parakeet-tdt-0.6b-v3"}, [2]string{"file", audio}), "parakeet"},
+		{"whisper id", multipartBody([2]string{"model", "whisper-large-v3-turbo"}, [2]string{"file", audio}), "whisper"},
+		{"no model field", multipartBody([2]string{"file", audio}), "whisper"},
+		{"unknown model", multipartBody([2]string{"model", "parakeet-tdt-0.6b-v2"}, [2]string{"file", audio}), "whisper"},
+		{"first of several model fields wins", multipartBody([2]string{"model", "parakeet-tdt-0.6b-v3"}, [2]string{"model", "whisper-large-v3-turbo"}, [2]string{"file", audio}), "parakeet"},
+		{"first of several model fields wins (whisper)", multipartBody([2]string{"model", "whisper-large-v3-turbo"}, [2]string{"model", "parakeet-tdt-0.6b-v3"}, [2]string{"file", audio}), "whisper"},
+		{"model after a file larger than the peek limit", multipartBody([2]string{"file", strings.Repeat("A", 2<<20)}, [2]string{"model", "parakeet-tdt-0.6b-v3"}), "whisper"},
+		{"no model field, large body", multipartBody([2]string{"file", strings.Repeat("A", 3<<20)}), "whisper"},
+		{"similar suffix is not a match", multipartBody([2]string{"model", "xparakeet-tdt-0.6b-v3"}, [2]string{"file", audio}), "whisper"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, got := asrBackends(t)
+			router := buildRouter(t, cfg)
+			req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "multipart/form-data; boundary=b")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+			}
+			if w.Body.String() != `{"text":"`+tc.want+`"}` {
+				t.Errorf("answered by %s, want %s", w.Body.String(), tc.want)
+			}
+			if got[tc.want] != tc.body {
+				t.Errorf("%s received a body that differs from the client's (%d vs %d bytes)", tc.want, len(got[tc.want]), len(tc.body))
+			}
+		})
+	}
+}
+
+// With Parakeet disabled, a request naming it still goes to Whisper unchanged:
+// the default path is exactly the previous behaviour.
+func TestRouting_ParakeetDisabledFallsBackToWhisper(t *testing.T) {
+	cfg, got := asrBackends(t)
+	cfg.Parakeet.Enabled = false
+	router := buildRouter(t, cfg)
+	body := multipartBody([2]string{"model", "parakeet-tdt-0.6b-v3"}, [2]string{"file", "RIFF"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=b")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Body.String() != `{"text":"whisper"}` || got["whisper"] != body {
+		t.Errorf("got %s, want whisper with the unchanged body", w.Body.String())
+	}
+}
+
+// Translations stay on Whisper even when they name the Parakeet model.
+func TestRouting_TranslationsStayOnWhisper(t *testing.T) {
+	cfg, _ := asrBackends(t)
+	router := buildRouter(t, cfg)
+	body := multipartBody([2]string{"model", "parakeet-tdt-0.6b-v3"}, [2]string{"file", "RIFF"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/translations", strings.NewReader(body))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=b")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Body.String() != `{"text":"whisper"}` {
+		t.Errorf("got %s, want whisper", w.Body.String())
+	}
+}

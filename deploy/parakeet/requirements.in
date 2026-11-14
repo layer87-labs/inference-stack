@@ -1,0 +1,19 @@
+# Direct dependencies of the parakeet image (deploy/Containerfile.parakeet).
+# requirements.txt is generated from this file with hashes for every package,
+# including the transitive ones; the image installs it with --require-hashes:
+#   pip-compile --generate-hashes --allow-unsafe --strip-extras -o requirements.txt requirements.in
+# (Python 3.13, Linux x86_64). Bump here, regenerate, re-run the image smoke test.
+
+# Model runtime: onnx-asr only depends on numpy; ONNX Runtime does the work.
+onnx-asr==0.12.0
+onnxruntime==1.32.0
+numpy==2.5.4
+
+# Audio decoding and resampling (wav, mp3, ogg/opus, webm, mp4/m4a, flac).
+# The wheel bundles the FFmpeg libraries, so no system ffmpeg is needed.
+av==19.0.2
+
+# HTTP server (deploy/parakeet/server.py).
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32

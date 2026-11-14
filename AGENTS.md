@@ -13,6 +13,7 @@ This file provides context for AI coding agents working in this repository.
 | Embedding | TEI (Rust) | BAAI/bge-m3 | `/v1/embeddings`, `/embed`, `/embed_sparse` | `EMBEDDING_ENABLED`, `EMBEDDING_URL` |
 | Reranker | TEI (Rust, ONNX) | cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 (default), BAAI/bge-reranker-v2-m3 | `/v1/rerank`, `/rerank` | `RERANKER_ENABLED`, `RERANKER_URL` |
 | Whisper ASR | faster-whisper (Python) | large-v3-turbo | `/v1/audio/transcriptions`, `/v1/audio/translations` | `WHISPER_ENABLED`, `WHISPER_URL` |
+| Parakeet ASR | onnx-asr + ONNX Runtime (Python) | parakeet-tdt-0.6b-v3 (int8) | `/v1/audio/transcriptions` when `model` names it | `PARAKEET_ENABLED`, `PARAKEET_URL` |
 
 `/v1/models` returns a merged list from all enabled backends (with static fallback).
 
@@ -41,6 +42,7 @@ deploy/
   Containerfile.reranker-model-init  Reranker model init container
   Containerfile.reranker-server      FlagEmbedding FastAPI server (/v1/rerank)
   Containerfile.whisper         Whisper ASR server (deploy/whisper/server.py) with model baked in
+  Containerfile.parakeet        Parakeet ASR server (deploy/parakeet/server.py), Chainguard Python base, model baked in
   whisper/
     server.py                   faster-whisper FastAPI server (/v1/audio/transcriptions)
   reranker/

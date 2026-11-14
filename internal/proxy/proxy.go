@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -133,7 +135,16 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		r.dispatch(w, req, r.cfg.Reranker, "reranker")
 
-	case strings.HasPrefix(path, "/v1/audio/transcriptions") || strings.HasPrefix(path, "/v1/audio/translations"):
+	case strings.HasPrefix(path, "/v1/audio/transcriptions"):
+		// Whisper stays the default; Parakeet only gets requests that name
+		// one of its models.
+		if r.cfg.Parakeet.Enabled && servesModel(r.cfg.Parakeet, r.peekFormModel(req)) {
+			r.dispatch(w, req, r.cfg.Parakeet, "parakeet")
+			return
+		}
+		r.dispatch(w, req, r.cfg.Whisper, "whisper")
+
+	case strings.HasPrefix(path, "/v1/audio/translations"):
 		r.dispatch(w, req, r.cfg.Whisper, "whisper")
 
 	default:
@@ -312,6 +323,67 @@ func (r *Router) stripAdvertisedModel(req *http.Request, b config.Backend) {
 		}
 	}
 	setBody(body)
+}
+
+const (
+	// maxModelField bounds the value read from a multipart "model" field.
+	maxModelField = 256
+	// peekLimit bounds how much of a transcription body the router reads to
+	// find the "model" field. A field further in is not seen and the request
+	// goes to the default backend (Whisper).
+	peekLimit = 1 << 20
+)
+
+// peekFormModel returns the first "model" field of a multipart/form-data
+// request and leaves the body intact for the proxy. It reads at most
+// peekLimit bytes: when "model" comes before the file (the usual order) only
+// the first few hundred bytes are held; otherwise at most 1 MiB, after which
+// it gives up. The bytes read are replayed in front of the rest of the body,
+// which keeps streaming. It returns "" for other content types, a missing or
+// late field or a malformed body; the request then goes to the default
+// backend, which reports any error itself.
+func (r *Router) peekFormModel(req *http.Request) string {
+	if req.Body == nil || req.Method != http.MethodPost {
+		return ""
+	}
+	mediaType, params, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	if err != nil || mediaType != "multipart/form-data" || params["boundary"] == "" {
+		return ""
+	}
+	var consumed bytes.Buffer
+	body := req.Body
+	mr := multipart.NewReader(io.TeeReader(io.LimitReader(body, peekLimit), &consumed), params["boundary"])
+	model := ""
+	for {
+		part, err := mr.NextPart()
+		if err != nil {
+			break
+		}
+		if part.FormName() == "model" && part.FileName() == "" {
+			v, _ := io.ReadAll(io.LimitReader(part, maxModelField))
+			model = strings.TrimSpace(string(v))
+			break
+		}
+	}
+	req.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(consumed.Bytes()), body), body}
+	return model
+}
+
+// servesModel reports whether model names one of the backend's models, with
+// or without a provider prefix ("gateway/parakeet-tdt-0.6b-v3").
+func servesModel(b config.Backend, model string) bool {
+	if model == "" {
+		return false
+	}
+	for _, m := range b.Models {
+		if model == m || strings.HasSuffix(model, "/"+m) {
+			return true
+		}
+	}
+	return false
 }
 
 type modelsResp struct {

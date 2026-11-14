@@ -460,6 +460,117 @@ whisper:
   #         app.kubernetes.io/component: whisper
   topologySpreadConstraints: []
 
+# ── Parakeet — fast ASR for short audio ──────────────────────────────────────
+# NVIDIA Parakeet-TDT-0.6B-v3 (int8 ONNX, ONNX Runtime on CPU) behind
+# deploy/parakeet/server.py. Meant for short recordings such as dictation:
+# ~0.7 s for 10 s of audio on 4 CPUs, ~1.5 s on 2 CPUs. Whisper stays the
+# default; the router sends POST /v1/audio/transcriptions here only when the
+# request's model field is "parakeet-tdt-0.6b-v3". The model is baked into
+# the image (~0.7 GB). Model license: CC-BY-4.0 (NVIDIA; ONNX export by
+# istupakov), see the image's /opt/model/NOTICE.
+parakeet:
+  enabled: false
+
+  # Released as parakeet:tdt-0.6b-v3-<CalVer> (and latest). Pin a released
+  # tag with its digest when enabling, e.g. "tdt-0.6b-v3-<CalVer>@sha256:...".
+  image:
+    repository: parakeet
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  modelName: "parakeet-tdt-0.6b-v3"
+
+  # Echoed as `language` in verbose_json when a request sends none. The model
+  # detects the language itself and cannot be forced.
+  language: ""
+
+  # ONNX Runtime intra-op threads; match the CPU limit (the runtime sizes
+  # itself by the node's cores otherwise).
+  cpuThreads: 2
+
+  # Upload limit (MB) and longest accepted audio (seconds, 413 beyond).
+  maxUploadMB: 25
+  maxAudioSeconds: 120
+  # Audio longer than chunkSeconds is cut at the quietest point of the last
+  # few seconds before each limit and transcribed chunk by chunk.
+  chunkSeconds: 30
+
+  # Transcriptions running at once, and requests allowed to wait behind them;
+  # beyond that the server answers 429 with Retry-After before reading the
+  # upload.
+  maxConcurrent: 1
+  maxQueue: 4
+
+  # Decoding plus inference of one request stop with 504 after this many
+  # seconds. Keep it below the router's PARAKEET_TIMEOUT (default 60s).
+  requestTimeoutSeconds: 30
+
+  service:
+    port: 9000
+
+  # Measured in the container (int8, 2 threads, 30 s chunks): 1.6 GiB peak
+  # memory for 66 s of audio. Without chunking 66 s peaked at 2.2 GiB, so keep
+  # chunkSeconds at 30 with a 2Gi limit.
+  resources:
+    requests:
+      cpu: "2000m"
+      memory: "2Gi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Uploads are spooled to /tmp (emptyDir, the root filesystem is read-only).
+  # At most maxConcurrent + maxQueue uploads of maxUploadMB each are in the
+  # pod at once; the chart refuses to render unless that fits into tmpSizeMB
+  # (default 5 x 25 MB = 125 MB < 512 MB), so a burst cannot evict the pod.
+  tmpSizeMB: 512
+
+  # Model load and warmup take a few seconds from local disk.
+  startupProbe:
+    enabled: true
+    periodSeconds: 5
+    failureThreshold: 36
+
+  # Only the router may connect (and nothing else is reachable from the pod).
+  # The kubelet's HTTP probes come from the node, not from a pod; most CNIs
+  # always allow node traffic, but check yours (e.g. Cilium with
+  # policy-enforcement "always", or Calico without host endpoint rules)
+  # before enabling, or the probes fail.
+  networkPolicy:
+    enabled: true
+
+  imagePullSecrets: []
+  nodeSelector: {}
+  tolerations: []
+  # Default: keep away from the embedding pods, whose load peaks would slow
+  # down transcription on the same node. Only a preference.
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: embedding
+  topologySpreadConstraints: []
+
 # ── ServiceMonitor (Prometheus Operator) ──────────────────────────────────────
 serviceMonitor:
   enabled: false

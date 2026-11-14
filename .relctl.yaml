@@ -31,6 +31,11 @@ components:
       - "deploy/whisper/**"
       - "deploy/Containerfile.whisper"
     version_scheme: calver
+  parakeet:
+    paths:
+      - "deploy/parakeet/**"
+      - "deploy/Containerfile.parakeet"
+    version_scheme: calver
   # The chart pins the router and tei image tags when it is packaged, so it is
   # also released when one of those components is.
   chart:

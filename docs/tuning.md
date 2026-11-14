@@ -109,6 +109,42 @@ RERANKER_MODEL_ID=<huggingface id>`. If the model repository ships
 Optimum. Only XLM-RoBERTa-style sequence-classification models that TEI
 supports will work.
 
+## Parakeet (Parakeet-TDT-0.6B-v3, int8 ONNX)
+
+A fast path for short audio such as dictation; Whisper stays the backend for
+long recordings. Clients choose it with `model=parakeet-tdt-0.6b-v3`.
+
+Measured on CPU (AVX2, int8, model already loaded; median of 3 runs):
+
+| Audio | 4 threads | 2 threads |
+| --- | --- | --- |
+| 5 s | 0.45 s | |
+| 10 s | 0.74 s | 1.5 s (12.7 s clip) |
+| 30 s | 2.3 s | 3.9 s (32.9 s clip) |
+
+Through the HTTP server in the container (2 CPUs, 2 threads, verbose_json,
+upload and decoding included): 1.5 s for a 12.7 s clip, 3.9 s for 32.9 s,
+7.7 s for 66 s (three 30 s chunks); 1.6 GiB peak memory. On 4 CPUs the
+server adds about 0.1 s per request to the bare model time (multipart,
+decoding, JSON).
+
+For comparison, Whisper large-v3-turbo needs ~8 s for a 12.7 s clip on 4
+threads, because it always encodes a full 30 s window.
+
+- `parakeet.cpuThreads` must match the CPU limit.
+- No `prompt` or hotwords: the model has no such input. Domain terms that it
+  gets wrong have to be fixed after transcription.
+- `verbose_json` returns `segments` (split at sentence punctuation) and
+  `words` with `start`, `end` and `confidence` (exp of the mean token
+  log-probability; a relative score, not calibrated).
+- Audio longer than `parakeet.chunkSeconds` (30) is cut at the quietest
+  100 ms of the last 5 s before each limit and transcribed chunk by chunk. A
+  cut inside a word can garble that word; continuous speech without pauses is
+  the worst case. Longer than `parakeet.maxAudioSeconds` (120) is
+  rejected with `413`.
+- `parakeet.maxConcurrent` transcriptions run at once, `parakeet.maxQueue` more
+  wait; further requests get `429` with `Retry-After`.
+
 ## Whisper (faster-whisper + large-v3-turbo, int8)
 
 Measured on CPU: ~2.0 GiB RSS peak; roughly real-time speed on 2 threads (a
