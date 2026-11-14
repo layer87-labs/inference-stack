@@ -35,9 +35,10 @@ at startup with a config error.
 
 `POST /v1/audio/transcriptions` goes to Parakeet only when Parakeet is enabled and the multipart `model` field
 names `parakeet-tdt-0.6b-v3` (a provider prefix such as `gateway/parakeet-tdt-0.6b-v3` is accepted). Every other
-request, including all translations, goes to Whisper as before. To read the field the router buffers the body up
-to the `model` part, so clients should send `model` before `file` (the OpenAI SDKs do); otherwise the whole
-upload is buffered, bounded by `ROUTER_MAX_REQUEST_SIZE`.
+request, including all translations, goes to Whisper as before. To read the field the router looks at most at the
+first 1 MiB of the body and then streams the rest unchanged. Send `model` before `file` (the OpenAI SDKs do):
+a `model` field behind a larger file is not seen, and the request goes to Whisper. With Parakeet disabled the
+router does not look into the body at all.
 
 A value of `0` or below for a `*_MAX_CONCURRENT` variable disables the bound for that backend.
 

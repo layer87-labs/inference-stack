@@ -325,16 +325,23 @@ func (r *Router) stripAdvertisedModel(req *http.Request, b config.Backend) {
 	setBody(body)
 }
 
-// maxModelField bounds the value read from a multipart "model" field.
-const maxModelField = 256
+const (
+	// maxModelField bounds the value read from a multipart "model" field.
+	maxModelField = 256
+	// peekLimit bounds how much of a transcription body the router reads to
+	// find the "model" field. A field further in is not seen and the request
+	// goes to the default backend (Whisper).
+	peekLimit = 1 << 20
+)
 
-// peekFormModel returns the "model" field of a multipart/form-data request
-// and leaves the body intact for the proxy. It reads parts until it finds the
-// field: when "model" comes before the file (the usual order) only the first
-// few hundred bytes are buffered; otherwise the body is buffered up to
-// MaxRequestSize. It returns "" for other content types, a missing field or a
-// malformed body; the request then goes to the default backend, which reports
-// any error itself.
+// peekFormModel returns the first "model" field of a multipart/form-data
+// request and leaves the body intact for the proxy. It reads at most
+// peekLimit bytes: when "model" comes before the file (the usual order) only
+// the first few hundred bytes are held; otherwise at most 1 MiB, after which
+// it gives up. The bytes read are replayed in front of the rest of the body,
+// which keeps streaming. It returns "" for other content types, a missing or
+// late field or a malformed body; the request then goes to the default
+// backend, which reports any error itself.
 func (r *Router) peekFormModel(req *http.Request) string {
 	if req.Body == nil || req.Method != http.MethodPost {
 		return ""
@@ -343,13 +350,9 @@ func (r *Router) peekFormModel(req *http.Request) string {
 	if err != nil || mediaType != "multipart/form-data" || params["boundary"] == "" {
 		return ""
 	}
-	limit := r.cfg.MaxRequestSize
-	if limit <= 0 {
-		limit = 100 << 20
-	}
 	var consumed bytes.Buffer
 	body := req.Body
-	mr := multipart.NewReader(io.TeeReader(io.LimitReader(body, limit), &consumed), params["boundary"])
+	mr := multipart.NewReader(io.TeeReader(io.LimitReader(body, peekLimit), &consumed), params["boundary"])
 	model := ""
 	for {
 		part, err := mr.NextPart()
@@ -370,7 +373,7 @@ func (r *Router) peekFormModel(req *http.Request) string {
 }
 
 // servesModel reports whether model names one of the backend's models, with
-// or without a provider prefix ("layer87/parakeet-tdt-0.6b-v3").
+// or without a provider prefix ("gateway/parakeet-tdt-0.6b-v3").
 func servesModel(b config.Backend, model string) bool {
 	if model == "" {
 		return false

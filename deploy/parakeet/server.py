@@ -30,9 +30,17 @@ last CHUNK_SEARCH_S seconds before each chunk boundary (energy, no VAD model)
 and the chunks are transcribed one after another. Audio longer than
 MAX_AUDIO_S is rejected with 413: this backend is the short-dictation path.
 
-Inference runs in a worker thread, at most MAX_CONCURRENT at a time. Up to
-MAX_QUEUE further requests wait; beyond that the server answers 429 with
-Retry-After at once instead of queuing without bound.
+Admission happens before the upload is read: an ASGI middleware answers 429
+(with Retry-After) when MAX_CONCURRENT + MAX_QUEUE requests are already in
+the server, and 413 when the body exceeds MAX_UPLOAD_MB, by Content-Length or
+by counting the bytes as they arrive. So at most MAX_CONCURRENT + MAX_QUEUE
+uploads are ever spooled to /tmp, each at most MAX_UPLOAD_MB, and the upload
+is decoded from that single spool file without a second copy. Inference runs
+in a worker thread, at most MAX_CONCURRENT at a time. Decoding and inference
+stop with 504 after REQUEST_TIMEOUT_S (checked while decoding and between
+chunks).
+
+Errors use the OpenAI shape: {"error": {"message", "type", "code"}}.
 
 Every request writes one JSON log line ("parakeet_request {...}") with sizes,
 timings and real-time factor. Audio and transcript are never logged.
@@ -47,12 +55,12 @@ import json
 import math
 import os
 import re
-import tempfile
 import time
 from contextlib import asynccontextmanager
 
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/opt/model")
@@ -69,6 +77,7 @@ CHUNK_SEARCH_S = float(os.environ.get("CHUNK_SEARCH_S", "5"))
 MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT", "1"))
 MAX_QUEUE = int(os.environ.get("MAX_QUEUE", "4"))
 RETRY_AFTER_S = os.environ.get("RETRY_AFTER_S", "2")
+REQUEST_TIMEOUT_S = float(os.environ.get("REQUEST_TIMEOUT_S", "60"))
 WARMUP = os.environ.get("PARAKEET_WARMUP", "true").lower() == "true"
 PORT = int(os.environ.get("PORT", "9000"))
 
@@ -79,16 +88,36 @@ MIN_AUDIO_S = 0.1
 # token timestamps and the end of the last token.
 FRAME_S = 0.08
 FORMATS = {"json", "text", "verbose_json", "srt", "vtt"}
+TRANSCRIBE_PATH = "/v1/audio/transcriptions"
+# Room for the multipart framing and the small form fields next to the file.
+MULTIPART_SLACK = 64 * 1024
 SENTENCE_END = re.compile(r"[.!?…]$")
 
 _model = None
 _ready = False
 _sem: asyncio.Semaphore | None = None
-_inflight = 0  # admitted requests: running plus waiting for the semaphore
+_inflight = 0  # admitted requests: uploading, waiting or running
 
 
 class AudioTooLong(Exception):
     pass
+
+
+class Deadline(Exception):
+    pass
+
+
+class ApiError(Exception):
+    """An error answered in the OpenAI error shape."""
+
+    def __init__(self, status: int, message: str, code: str, headers: dict | None = None):
+        super().__init__(message)
+        self.status, self.message, self.code, self.headers = status, message, code, headers
+
+
+def error_body(status: int, message: str, code: str) -> dict:
+    kind = "server_error" if status >= 500 else ("rate_limit_error" if status == 429 else "invalid_request_error")
+    return {"error": {"message": message, "type": kind, "code": code}}
 
 
 def _load_model():
@@ -139,6 +168,106 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="parakeet", lifespan=lifespan)
 
 
+@app.exception_handler(ApiError)
+async def _api_error(request, exc: ApiError):
+    return JSONResponse(error_body(exc.status, exc.message, exc.code), status_code=exc.status, headers=exc.headers)
+
+
+@app.exception_handler(HTTPException)
+async def _http_error(request, exc: HTTPException):
+    return JSONResponse(error_body(exc.status_code, str(exc.detail), "http_error"), status_code=exc.status_code,
+                        headers=getattr(exc, "headers", None))
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request, exc: RequestValidationError):
+    return JSONResponse(error_body(400, "invalid request: missing or malformed form fields", "invalid_request"),
+                        status_code=400)
+
+
+class AdmissionMiddleware:
+    """Admit or reject transcription requests before their body is parsed.
+
+    Starlette spools a multipart upload to disk before the endpoint runs, so
+    the endpoint is too late to protect /tmp. This middleware counts requests
+    in the server (429 beyond MAX_CONCURRENT + MAX_QUEUE) and caps the body
+    (413 by Content-Length, or once the bytes received exceed the limit).
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        global _inflight
+        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] != TRANSCRIBE_PATH:
+            await self.app(scope, receive, send)
+            return
+        limit = MAX_UPLOAD_MB * 1024 * 1024 + MULTIPART_SLACK
+        headers = dict(scope.get("headers") or [])
+        if _inflight >= MAX_CONCURRENT + MAX_QUEUE:
+            _log_request(status="error", error="overloaded", http_status=429)
+            await _send_json(send, 429, error_body(429, "server busy, retry later", "overloaded"),
+                             [(b"retry-after", RETRY_AFTER_S.encode())])
+            return
+        try:
+            declared = int(headers.get(b"content-length", b"-1"))
+        except ValueError:
+            declared = -1
+        if declared > limit:
+            await self._too_large(send, declared)
+            return
+
+        received = 0
+        too_large = False
+
+        async def limited_receive():
+            nonlocal received, too_large
+            if too_large:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    too_large = True
+                    return {"type": "http.request", "body": b"", "more_body": False}
+            return message
+
+        started = False
+
+        async def guarded_send(message):
+            # Once the body was cut off, whatever the app answers (a parse
+            # error) is replaced by the 413.
+            nonlocal started
+            if too_large:
+                if not started:
+                    started = True
+                    await self._too_large(send, received)
+                return
+            await send(message)
+
+        _inflight += 1
+        try:
+            await self.app(scope, limited_receive, guarded_send)
+        finally:
+            _inflight -= 1
+
+    @staticmethod
+    async def _too_large(send, size: int):
+        _log_request(status="error", error="upload_too_large", http_status=413, file_bytes=size)
+        await _send_json(send, 413, error_body(413, f"file exceeds {MAX_UPLOAD_MB} MB", "upload_too_large"))
+
+
+async def _send_json(send, status: int, body: dict, extra: list | None = None):
+    data = json.dumps(body).encode()
+    await send({"type": "http.response.start", "status": status,
+                "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(data)).encode())]
+                + (extra or [])})
+    await send({"type": "http.response.body", "body": data})
+
+
+app.add_middleware(AdmissionMiddleware)
+
+
 @app.get("/health")
 async def health():
     if _model is None or not _ready:
@@ -154,11 +283,12 @@ async def models():
     }
 
 
-def decode(path: str, max_s: float) -> np.ndarray:
-    """Decode any FFmpeg-readable file to 16 kHz mono float32.
+def decode(source, max_s: float, deadline: float | None = None) -> np.ndarray:
+    """Decode any FFmpeg-readable file (path or file object) to 16 kHz mono float32.
 
     Raises AudioTooLong as soon as more than max_s seconds are decoded, so an
-    over-long upload is not decoded to the end.
+    over-long upload is not decoded to the end, and Deadline once
+    time.monotonic() passes deadline.
     """
     import av
 
@@ -166,7 +296,7 @@ def decode(path: str, max_s: float) -> np.ndarray:
     parts: list[np.ndarray] = []
     total = 0
     resampler = av.AudioResampler(format="flt", layout="mono", rate=SAMPLE_RATE)
-    with av.open(path, mode="r") as container:
+    with av.open(source, mode="r") as container:
         stream = next((s for s in container.streams if s.type == "audio"), None)
         if stream is None:
             raise ValueError("no audio stream")
@@ -177,6 +307,8 @@ def decode(path: str, max_s: float) -> np.ndarray:
                 total += out.samples
             if total > limit:
                 raise AudioTooLong()
+            if deadline is not None and time.monotonic() > deadline:
+                raise Deadline()
         for out in resampler.resample(None):
             parts.append(out.to_ndarray().reshape(-1))
             total += out.samples
@@ -265,13 +397,18 @@ def _segment(idx: int, words: list[dict]) -> dict:
     return seg
 
 
-def transcribe(audio: np.ndarray) -> tuple[str, list[dict], int]:
-    """Transcribe decoded audio; returns (text, words, number of chunks)."""
+def transcribe(audio: np.ndarray, deadline: float | None = None) -> tuple[str, list[dict], int]:
+    """Transcribe decoded audio; returns (text, words, number of chunks).
+
+    Raises Deadline before a chunk when time.monotonic() has passed deadline.
+    """
     starts = split_points(audio, CHUNK_S, CHUNK_SEARCH_S)
     bounds = starts[1:] + [len(audio)]
     texts: list[str] = []
     words: list[dict] = []
     for lo, hi in zip(starts, bounds):
+        if deadline is not None and time.monotonic() > deadline:
+            raise Deadline()
         res = _model.recognize(audio[lo:hi])
         text = (res.text or "").strip()
         if text:
@@ -293,13 +430,13 @@ def _log_request(**fields):
     print("parakeet_request " + json.dumps(fields, separators=(",", ":")), flush=True)
 
 
-def _fail(status: int, detail: str, t_start: float, size: int, error: str, headers: dict | None = None):
-    _log_request(status="error", error=error, http_status=status, file_bytes=size,
+def _fail(status: int, message: str, t_start: float, size: int, code: str, headers: dict | None = None):
+    _log_request(status="error", error=code, http_status=status, file_bytes=size,
                  total_s=round(time.monotonic() - t_start, 3))
-    raise HTTPException(status_code=status, detail=detail, headers=headers)
+    raise ApiError(status, message, code, headers)
 
 
-@app.post("/v1/audio/transcriptions")
+@app.post(TRANSCRIBE_PATH)
 async def transcriptions(
     file: UploadFile = File(...),
     model: str | None = Form(None),
@@ -308,51 +445,42 @@ async def transcriptions(
     response_format: str = Form("json"),
     temperature: float | None = Form(None),
 ):
-    global _inflight
+    # The upload is already spooled (and size-checked by AdmissionMiddleware).
     t_start = time.monotonic()
     if _model is None or not _ready:
-        raise HTTPException(status_code=503, detail="model not loaded yet")
+        _fail(503, "model not loaded yet", t_start, 0, "not_ready")
     if response_format not in FORMATS:
-        raise HTTPException(status_code=400, detail=f"response_format must be one of {sorted(FORMATS)}")
-    if _inflight >= MAX_CONCURRENT + MAX_QUEUE:
-        _fail(429, "server busy, retry later", t_start, 0, "overloaded", {"Retry-After": RETRY_AFTER_S})
+        _fail(400, f"response_format must be one of {sorted(FORMATS)}", t_start, 0, "invalid_response_format")
+    size = file.size or 0
+    if size == 0:
+        _fail(400, "empty file", t_start, 0, "empty_file")
 
-    _inflight += 1
-    try:
-        limit = MAX_UPLOAD_MB * 1024 * 1024
-        size = 0
-        with tempfile.NamedTemporaryFile(suffix=os.path.splitext(file.filename or "")[1] or ".audio") as tmp:
-            while chunk := await file.read(1024 * 1024):
-                size += len(chunk)
-                if size > limit:
-                    _fail(413, f"file exceeds {MAX_UPLOAD_MB} MB", t_start, size, "upload_too_large")
-                tmp.write(chunk)
-            tmp.flush()
-            if size == 0:
-                _fail(400, "empty file", t_start, 0, "empty_file")
-
-            t_queued = time.monotonic()
-            async with _sem:
-                t_run = time.monotonic()
-                try:
-                    audio = await asyncio.to_thread(decode, tmp.name, MAX_AUDIO_S)
-                except AudioTooLong:
-                    _fail(413, f"audio longer than {MAX_AUDIO_S:g} s; use a long-form transcription model",
-                          t_start, size, "audio_too_long")
-                except Exception as exc:
-                    _fail(400, "could not decode audio", t_start, size, type(exc).__name__)
-                t_dec = time.monotonic()
-                audio_s = len(audio) / SAMPLE_RATE
-                if audio_s < MIN_AUDIO_S:
-                    _fail(400, "no audio in file", t_start, size, "no_audio")
-                try:
-                    text, words, chunks = await asyncio.to_thread(transcribe, audio)
-                except Exception as exc:
-                    _fail(500, "transcription failed", t_start, size, type(exc).__name__)
-                t_done = time.monotonic()
-                del audio
-    finally:
-        _inflight -= 1
+    async with _sem:
+        t_run = time.monotonic()
+        deadline = t_run + REQUEST_TIMEOUT_S
+        try:
+            file.file.seek(0)
+            # Decode straight from the spooled upload: no second copy on disk.
+            audio = await asyncio.to_thread(decode, file.file, MAX_AUDIO_S, deadline)
+        except AudioTooLong:
+            _fail(413, f"audio longer than {MAX_AUDIO_S:g} s; use a long-form transcription model",
+                  t_start, size, "audio_too_long")
+        except Deadline:
+            _fail(504, f"decoding took longer than {REQUEST_TIMEOUT_S:g} s", t_start, size, "timeout")
+        except Exception as exc:
+            _fail(400, "could not decode audio", t_start, size, "invalid_audio:" + type(exc).__name__)
+        t_dec = time.monotonic()
+        audio_s = len(audio) / SAMPLE_RATE
+        if audio_s < MIN_AUDIO_S:
+            _fail(400, "no audio in file", t_start, size, "no_audio")
+        try:
+            text, words, chunks = await asyncio.to_thread(transcribe, audio, deadline)
+        except Deadline:
+            _fail(504, f"transcription took longer than {REQUEST_TIMEOUT_S:g} s", t_start, size, "timeout")
+        except Exception as exc:
+            _fail(500, "transcription failed", t_start, size, "inference_error:" + type(exc).__name__)
+        t_done = time.monotonic()
+        del audio
 
     _log_request(
         status="ok",
@@ -364,8 +492,7 @@ async def transcriptions(
         audio_s=round(audio_s, 2),
         chunks=chunks,
         words=len(words),
-        upload_s=round(t_queued - t_start, 3),
-        queue_s=round(t_run - t_queued, 3),
+        queue_s=round(t_run - t_start, 3),
         decode_s=round(t_dec - t_run, 3),
         infer_s=round(t_done - t_dec, 3),
         total_s=round(time.monotonic() - t_start, 3),

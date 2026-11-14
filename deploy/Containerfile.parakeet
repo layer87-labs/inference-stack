@@ -37,7 +37,7 @@ ARG PARAKEET_MODEL_REVISION=8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce
 RUN apk add --no-cache python-${PYTHON} py${PYTHON}-pip
 COPY deploy/parakeet/requirements.txt /tmp/requirements.txt
 RUN python${PYTHON} -m venv /venv && \
-    /venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt && \
+    /venv/bin/pip install --no-cache-dir --require-hashes --only-binary=:all: -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
 # Model files and their SHA-256 (int8 encoder and decoder; the NeMo
@@ -66,8 +66,7 @@ EOF
 FROM ${BASE_IMAGE}
 ARG PYTHON
 
-RUN apk add --no-cache python-${PYTHON} && \
-    adduser -D -u 65532 -s /sbin/nologin nonroot 2>/dev/null || true
+RUN apk add --no-cache python-${PYTHON}
 
 COPY --from=build /venv /venv
 COPY --from=build /opt/model /opt/model

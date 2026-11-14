@@ -20,4 +20,7 @@ grep -q 'app.kubernetes.io/component: router' <<<"$(grep -A30 'kind: NetworkPoli
 
 nonp=$(helm template t "$chart" --set parakeet.enabled=true --set parakeet.networkPolicy.enabled=false)
 grep -q 'kind: NetworkPolicy' <<<"$nonp" && fail "networkpolicy rendered although disabled"
+helm template t "$chart" --set parakeet.enabled=true --set parakeet.maxQueue=30 >/dev/null 2>&1 \
+  && fail "chart rendered although uploads can exceed the /tmp volume"
+grep -q 'sizeLimit: 512Mi' <<<"$on" || fail "tmp volume size not rendered"
 echo "chart OK"

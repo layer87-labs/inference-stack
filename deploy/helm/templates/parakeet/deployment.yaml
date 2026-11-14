@@ -1,4 +1,8 @@
 {{- if .Values.parakeet.enabled }}
+{{- $p := .Values.parakeet }}
+{{- if ge (mul (add $p.maxConcurrent $p.maxQueue) $p.maxUploadMB) (int $p.tmpSizeMB) }}
+{{- fail (printf "parakeet: (maxConcurrent + maxQueue) x maxUploadMB = %d MB must be below tmpSizeMB (%d)" (mul (add $p.maxConcurrent $p.maxQueue) $p.maxUploadMB) (int $p.tmpSizeMB)) }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -62,6 +66,8 @@ spec:
           value: {{ .Values.parakeet.maxConcurrent | quote }}
         - name: MAX_QUEUE
           value: {{ .Values.parakeet.maxQueue | quote }}
+        - name: REQUEST_TIMEOUT_S
+          value: {{ .Values.parakeet.requestTimeoutSeconds | quote }}
         - name: PYTHONDONTWRITEBYTECODE
           value: "1"
         ports:
@@ -102,7 +108,7 @@ spec:
       volumes:
       - name: tmp
         emptyDir:
-          sizeLimit: {{ .Values.parakeet.tmpSizeLimit }}
+          sizeLimit: {{ .Values.parakeet.tmpSizeMB }}Mi
 ---
 apiVersion: v1
 kind: Service

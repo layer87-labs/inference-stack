@@ -760,10 +760,14 @@ func TestRouting_TranscriptionByModel(t *testing.T) {
 	}{
 		{"parakeet id, model before file", multipartBody([2]string{"model", "parakeet-tdt-0.6b-v3"}, [2]string{"file", audio}), "parakeet"},
 		{"parakeet id, model after file", multipartBody([2]string{"file", audio}, [2]string{"model", "parakeet-tdt-0.6b-v3"}), "parakeet"},
-		{"parakeet id with provider prefix", multipartBody([2]string{"model", "layer87/parakeet-tdt-0.6b-v3"}, [2]string{"file", audio}), "parakeet"},
+		{"parakeet id with provider prefix", multipartBody([2]string{"model", "gateway/parakeet-tdt-0.6b-v3"}, [2]string{"file", audio}), "parakeet"},
 		{"whisper id", multipartBody([2]string{"model", "whisper-large-v3-turbo"}, [2]string{"file", audio}), "whisper"},
 		{"no model field", multipartBody([2]string{"file", audio}), "whisper"},
 		{"unknown model", multipartBody([2]string{"model", "parakeet-tdt-0.6b-v2"}, [2]string{"file", audio}), "whisper"},
+		{"first of several model fields wins", multipartBody([2]string{"model", "parakeet-tdt-0.6b-v3"}, [2]string{"model", "whisper-large-v3-turbo"}, [2]string{"file", audio}), "parakeet"},
+		{"first of several model fields wins (whisper)", multipartBody([2]string{"model", "whisper-large-v3-turbo"}, [2]string{"model", "parakeet-tdt-0.6b-v3"}, [2]string{"file", audio}), "whisper"},
+		{"model after a file larger than the peek limit", multipartBody([2]string{"file", strings.Repeat("A", 2<<20)}, [2]string{"model", "parakeet-tdt-0.6b-v3"}), "whisper"},
+		{"no model field, large body", multipartBody([2]string{"file", strings.Repeat("A", 3<<20)}), "whisper"},
 		{"similar suffix is not a match", multipartBody([2]string{"model", "xparakeet-tdt-0.6b-v3"}, [2]string{"file", audio}), "whisper"},
 	}
 	for _, tc := range cases {

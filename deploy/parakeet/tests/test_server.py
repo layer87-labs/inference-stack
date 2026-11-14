@@ -4,10 +4,11 @@ Decoding is real (PyAV), so the format tests exercise the same code as the image
 Run: pip install fastapi httpx python-multipart pytest numpy av && pytest deploy/parakeet
 """
 
-import asyncio
 import io
 import os
 import sys
+import threading
+import time
 import wave
 from types import SimpleNamespace
 
@@ -30,9 +31,14 @@ LOGPROBS = [-0.1, -0.2, -0.4, 0.0, -1.0, -1.0, -0.05, 0.0]
 class FakeModel:
     def __init__(self):
         self.calls = []
+        self.gate = None  # threading.Event: block recognize() until set
+        self.delay = 0.0
 
     def recognize(self, audio):
         self.calls.append(len(audio))
+        if self.gate is not None:
+            self.gate.wait(10)
+        time.sleep(self.delay)
         return SimpleNamespace(text=SECRET_TEXT, tokens=TOKENS, timestamps=TIMES, logprobs=LOGPROBS)
 
 
@@ -71,15 +77,23 @@ def encoded_bytes(container: str, codec: str, seconds: float = 1.0, rate: int = 
 @pytest.fixture
 def client(monkeypatch):
     model = FakeModel()
-    monkeypatch.setattr(server, "_model", model)
-    monkeypatch.setattr(server, "_ready", True)
-    monkeypatch.setattr(server, "_sem", asyncio.Semaphore(1))
+    monkeypatch.setattr(server, "_load_model", lambda: model)
+    monkeypatch.setattr(server, "WARMUP", False)
     monkeypatch.setattr(server, "_inflight", 0)
+    monkeypatch.setattr(server, "MAX_CONCURRENT", 1)
+    monkeypatch.setattr(server, "MAX_QUEUE", 1)
     monkeypatch.setattr(server, "MAX_AUDIO_S", 120.0)
     monkeypatch.setattr(server, "CHUNK_S", 30.0)
-    c = TestClient(server.app)
-    c.model = model
-    return c
+    monkeypatch.setattr(server, "REQUEST_TIMEOUT_S", 60.0)
+    # The context manager runs the lifespan (fake model, semaphore) and keeps
+    # one event loop for all requests, so concurrent requests really queue.
+    with TestClient(server.app) as c:
+        c.model = model
+        yield c
+
+
+def err(r):
+    return r.json()["error"]
 
 
 def post(client, payload: bytes, name: str = "a.wav", **data):
@@ -136,32 +150,62 @@ def test_srt(client):
 
 
 def test_unknown_format(client):
-    assert post(client, wav_bytes(1.0), response_format="xml").status_code == 400
+    r = post(client, wav_bytes(1.0), response_format="xml")
+    assert r.status_code == 400
+    assert err(r)["code"] == "invalid_response_format"
+
+
+def test_missing_file_field(client):
+    r = client.post("/v1/audio/transcriptions", data={"model": "x"})
+    assert r.status_code == 400
+    assert err(r) == {"message": "invalid request: missing or malformed form fields",
+                      "type": "invalid_request_error", "code": "invalid_request"}
 
 
 def test_empty_file(client):
     r = post(client, b"")
     assert r.status_code == 400
-    assert r.json()["detail"] == "empty file"
+    assert err(r) == {"message": "empty file", "type": "invalid_request_error", "code": "empty_file"}
 
 
 def test_corrupt_file(client):
     r = post(client, b"this is not audio at all" * 100)
     assert r.status_code == 400
-    assert r.json()["detail"] == "could not decode audio"
+    assert err(r)["message"] == "could not decode audio"
     assert client.model.calls == []
 
 
 def test_silence_too_short(client):
     r = post(client, wav_bytes(0.05))
     assert r.status_code == 400
-    assert r.json()["detail"] == "no audio in file"
+    assert err(r)["code"] == "no_audio"
 
 
-def test_upload_too_large(client, monkeypatch):
+def test_upload_too_large_by_content_length(client, monkeypatch):
     monkeypatch.setattr(server, "MAX_UPLOAD_MB", 1)
-    r = post(client, b"\0" * (1024 * 1024 + 1))
+    r = post(client, b"\0" * (2 * 1024 * 1024))
     assert r.status_code == 413
+    assert err(r) == {"message": "file exceeds 1 MB", "type": "invalid_request_error", "code": "upload_too_large"}
+    assert client.model.calls == []
+
+
+def test_upload_too_large_without_content_length(client, monkeypatch):
+    """Chunked upload: the limit is enforced while the bytes arrive."""
+    monkeypatch.setattr(server, "MAX_UPLOAD_MB", 1)
+    sent = []
+
+    def body():
+        yield b"--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\n\r\n"
+        for _ in range(64):  # 4 MiB in 64 KiB pieces
+            sent.append(1)
+            yield b"\0" * 65536
+        yield b"\r\n--b--\r\n"
+
+    r = client.post("/v1/audio/transcriptions", content=body(),
+                    headers={"Content-Type": "multipart/form-data; boundary=b"})
+    assert r.status_code == 413
+    assert err(r)["code"] == "upload_too_large"
+    assert client.model.calls == []
 
 
 def test_audio_too_long(client, monkeypatch):
@@ -182,16 +226,49 @@ def test_long_audio_is_chunked(client, monkeypatch):
     assert r.json()["words"][4]["start"] > 1.4
 
 
-def test_overload_returns_429(client, monkeypatch):
-    monkeypatch.setattr(server, "_inflight", server.MAX_CONCURRENT + server.MAX_QUEUE)
-    r = post(client, wav_bytes(1.0))
+def test_backpressure_returns_429(client):
+    """One request runs, one waits (MAX_CONCURRENT 1, MAX_QUEUE 1), the third is rejected."""
+    client.model.gate = threading.Event()
+    payload = wav_bytes(1.0, rate=16000, channels=1)
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(post(client, payload).status_code)) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for _ in range(100):  # until both are admitted
+        if server._inflight == 2:
+            break
+        time.sleep(0.02)
+    assert server._inflight == 2
+    r = post(client, payload)
     assert r.status_code == 429
     assert r.headers["Retry-After"] == server.RETRY_AFTER_S
+    assert err(r)["type"] == "rate_limit_error"
+    client.model.gate.set()
+    for t in threads:
+        t.join(10)
+    assert sorted(results) == [200, 200]
+    assert server._inflight == 0
+    # Capacity is free again.
+    assert post(client, payload).status_code == 200
+
+
+def test_timeout_between_chunks_releases_slot(client, monkeypatch):
+    monkeypatch.setattr(server, "CHUNK_S", 1.0)
+    monkeypatch.setattr(server, "CHUNK_SEARCH_S", 0.2)
+    monkeypatch.setattr(server, "REQUEST_TIMEOUT_S", 0.2)
+    client.model.delay = 0.3
+    r = post(client, wav_bytes(5.0, rate=16000, channels=1))
+    assert r.status_code == 504
+    assert err(r)["code"] == "timeout"
+    assert len(client.model.calls) == 1  # stopped after the first chunk
+    client.model.delay = 0.0
+    monkeypatch.setattr(server, "REQUEST_TIMEOUT_S", 60.0)
+    assert post(client, wav_bytes(1.0)).status_code == 200
 
 
 def test_health_and_models(client, monkeypatch):
     assert client.get("/health").json() == {"status": "ok"}
-    assert client.get("/v1/models").json()["data"][0]["id"] == "parakeet-tdt-0.6b-v3"
+    assert client.get("/v1/models").json()["data"][0]["id"] == server.MODEL_NAME
     monkeypatch.setattr(server, "_ready", False)
     assert client.get("/health").status_code == 503
 

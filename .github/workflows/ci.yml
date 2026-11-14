@@ -68,7 +68,7 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          grep -E '^(numpy|av|fastapi|python-multipart)==' deploy/parakeet/requirements.txt > /tmp/test-req.txt
+          grep -E '^(numpy|av|fastapi|python-multipart)==' deploy/parakeet/requirements.in > /tmp/test-req.txt
           pip install -r /tmp/test-req.txt httpx pytest
 
       - name: Test
