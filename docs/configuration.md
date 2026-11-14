@@ -28,6 +28,16 @@ at startup with a config error.
 | `WHISPER_URL` | none | Base URL of the Whisper server |
 | `WHISPER_TIMEOUT` | `300s` | Per-request timeout |
 | `WHISPER_MAX_CONCURRENT` | `8` | Requests forwarded at once; more get `503` + `Retry-After` |
+| `PARAKEET_ENABLED` | `false` | Enable the Parakeet backend (short-audio transcription) |
+| `PARAKEET_URL` | none | Base URL of the Parakeet server |
+| `PARAKEET_TIMEOUT` | `60s` | Per-request timeout |
+| `PARAKEET_MAX_CONCURRENT` | `6` | Requests forwarded at once; more get `503` + `Retry-After` |
+
+`POST /v1/audio/transcriptions` goes to Parakeet only when Parakeet is enabled and the multipart `model` field
+names `parakeet-tdt-0.6b-v3` (a provider prefix such as `gateway/parakeet-tdt-0.6b-v3` is accepted). Every other
+request, including all translations, goes to Whisper as before. To read the field the router buffers the body up
+to the `model` part, so clients should send `model` before `file` (the OpenAI SDKs do); otherwise the whole
+upload is buffered, bounded by `ROUTER_MAX_REQUEST_SIZE`.
 
 A value of `0` or below for a `*_MAX_CONCURRENT` variable disables the bound for that backend.
 

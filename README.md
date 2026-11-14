@@ -110,7 +110,7 @@ batch tokens) is in [docs/tuning.md](docs/tuning.md); all chart options are comm
 | `POST /v1/embeddings` | embedding | OpenAI-style. The advertised model id `BAAI/bge-m3` may be sent as `model`. |
 | `POST /embed`, `POST /embed_sparse` | embedding | TEI native (dense and sparse) |
 | `POST /v1/rerank`, `POST /rerank` | reranker | `/v1/rerank` is rewritten to TEI's `/rerank` |
-| `POST /v1/audio/transcriptions` | whisper | multipart; `json`, `text`, `verbose_json`, `srt`, `vtt` |
+| `POST /v1/audio/transcriptions` | whisper, parakeet | multipart; `json`, `text`, `verbose_json`, `srt`, `vtt`. Goes to parakeet only when it is enabled and `model` is `parakeet-tdt-0.6b-v3` |
 | `POST /v1/audio/translations` | whisper | exposed, but `large-v3-turbo` is not trained for translation |
 | `GET /v1/models` | all enabled | merged list incl. `limits` of embedding and reranker |
 | `GET /healthz`, `GET /readyz` | router | per-backend status, always HTTP 200 (`ok` or `degraded`) |
@@ -135,6 +135,7 @@ concurrency bound `503 backend_overloaded` with `Retry-After`.
 | embedding-model | `tei-model-init` | `BAAI/bge-m3` baked in, copies to the volume |
 | reranker-model | `tei-reranker-model-init` | Reranker as ONNX: `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` (default) or `BAAI/bge-reranker-v2-m3` |
 | whisper | `whisper` | faster-whisper server, `large-v3-turbo` baked in |
+| parakeet | `parakeet` | Fast transcription of short audio: NVIDIA Parakeet-TDT-0.6B-v3 (int8 ONNX, CC-BY-4.0) on ONNX Runtime, baked in |
 | chart | `charts/inference-stack` (OCI) | Helm chart |
 
 Why the default reranker is the small model: on 4 CPUs it needs 0.76 to 0.85 s for 20 documents of 800

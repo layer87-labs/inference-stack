@@ -27,7 +27,7 @@ WHISPER_MODEL   ?= $(shell grep '^ARG WHISPER_MODEL=' deploy/Containerfile.whisp
         docker/tei-base docker/tei-runtime \
         docker/tei-model-init-embedding \
         docker/tei-reranker-model-init \
-        docker/whisper \
+        docker/whisper docker/parakeet push/parakeet \
         push push/router push/tei push/reranker push/whisper \
         versions
 
@@ -127,12 +127,26 @@ docker/whisper:
 	  -t $(REGISTRY)/whisper:$(WHISPER_MODEL)-$(WHISPER_IMAGE_VERSION) \
 	  .
 
+## ── Docker: Parakeet ────────────────────────────────────────────────────────
+
+PARAKEET_IMAGE_VERSION ?= $(VERSION)
+
+# parakeet — tag = tdt-0.6b-v3-<parakeet version>
+docker/parakeet:
+	docker build \
+	  -f deploy/Containerfile.parakeet \
+	  -t $(REGISTRY)/parakeet:tdt-0.6b-v3-$(PARAKEET_IMAGE_VERSION) \
+	  .
+
+push/parakeet:
+	docker push $(REGISTRY)/parakeet:tdt-0.6b-v3-$(PARAKEET_IMAGE_VERSION)
+
 ## ── Build all ─────────────────────────────────────────────────────────────────
 
 docker: docker/router docker/tei-base docker/tei-runtime \
         docker/tei-model-init-embedding \
         docker/tei-reranker-model-init \
-        docker/whisper
+        docker/whisper docker/parakeet
 
 ## ── Push ─────────────────────────────────────────────────────────────────────
 
@@ -150,7 +164,7 @@ push/reranker:
 push/whisper:
 	docker push $(REGISTRY)/whisper:$(WHISPER_MODEL)-$(WHISPER_IMAGE_VERSION)
 
-push: push/router push/tei push/reranker push/whisper
+push: push/router push/tei push/reranker push/whisper push/parakeet
 
 ## ── Info ──────────────────────────────────────────────────────────────────────
 

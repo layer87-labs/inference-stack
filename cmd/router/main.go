@@ -33,6 +33,7 @@ func main() {
 		zap.Bool("embedding_enabled", cfg.Embedding.Enabled),
 		zap.Bool("reranker_enabled", cfg.Reranker.Enabled),
 		zap.Bool("whisper_enabled", cfg.Whisper.Enabled),
+		zap.Bool("parakeet_enabled", cfg.Parakeet.Enabled),
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

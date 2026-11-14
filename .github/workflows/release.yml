@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       components:
-        description: "Components to release even if nothing changed (comma-separated: router,tei,embedding-model,reranker-model,whisper,chart or 'all')"
+        description: "Components to release even if nothing changed (comma-separated: router,tei,embedding-model,reranker-model,whisper,parakeet,chart or 'all')"
         required: false
         default: ""
         type: string
@@ -43,6 +43,7 @@ jobs:
       embedding-model: ${{ steps.decide.outputs.embedding-model }}
       reranker-model: ${{ steps.decide.outputs.reranker-model }}
       whisper: ${{ steps.decide.outputs.whisper }}
+      parakeet: ${{ steps.decide.outputs.parakeet }}
       chart: ${{ steps.decide.outputs.chart }}
     steps:
       - uses: actions/checkout@v7
@@ -70,6 +71,9 @@ jobs:
       - name: Changed (whisper)
         id: whisper
         run: relctl release changed --component whisper
+      - name: Changed (parakeet)
+        id: parakeet
+        run: relctl release changed --component parakeet
       - name: Changed (chart)
         id: chart
         run: relctl release changed --component chart
@@ -83,6 +87,7 @@ jobs:
           CHANGED_EMBEDDING_MODEL: ${{ steps.embedding-model.outputs.RELCTL_CHANGED }}
           CHANGED_RERANKER_MODEL: ${{ steps.reranker-model.outputs.RELCTL_CHANGED }}
           CHANGED_WHISPER: ${{ steps.whisper.outputs.RELCTL_CHANGED }}
+          CHANGED_PARAKEET: ${{ steps.parakeet.outputs.RELCTL_CHANGED }}
           CHANGED_CHART: ${{ steps.chart.outputs.RELCTL_CHANGED }}
         run: |
           decide() { # name changed
@@ -99,6 +104,7 @@ jobs:
           decide embedding-model "${CHANGED_EMBEDDING_MODEL}"
           decide reranker-model "${CHANGED_RERANKER_MODEL}"
           decide whisper "${CHANGED_WHISPER}"
+          decide parakeet "${CHANGED_PARAKEET}"
           decide chart "${CHANGED_CHART}"
 
   # ── router ────────────────────────────────────────────────────────────────
@@ -381,6 +387,54 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
           run: relctl release publish --component whisper --release-id ${{ needs.whisper-release.outputs.release-id }}
+
+  # ── parakeet (image tag: tdt-0.6b-v3-<version> and latest) ──────────────
+  parakeet-release:
+    needs: changes
+    if: needs.changes.outputs.parakeet == 'true'
+    uses: ./.github/workflows/component-release.yml
+    with:
+      component: parakeet
+
+  parakeet-build:
+    needs: parakeet-release
+    if: needs.parakeet-release.outputs.release-id != ''
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.parakeet-release.outputs.version }}
+      MODEL_TAG: tdt-0.6b-v3-${{ needs.parakeet-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push parakeet
+        run: |
+          docker build \
+            -f deploy/Containerfile.parakeet \
+            -t ${{ env.REGISTRY }}/parakeet:${MODEL_TAG} \
+            -t ${{ env.REGISTRY }}/parakeet:latest \
+            .
+          docker push ${{ env.REGISTRY }}/parakeet:${MODEL_TAG}
+          docker push ${{ env.REGISTRY }}/parakeet:latest
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless via OIDC, by digest)
+        run: scripts/sign-image.sh "${{ env.REGISTRY }}/parakeet:${MODEL_TAG}"
+
+      - name: Publish release
+        uses: layer87-labs/relctl-action@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          relctl-version: ${{ env.RELCTL_TOOL_VERSION }}
+          run: relctl release publish --component parakeet --release-id ${{ needs.parakeet-release.outputs.release-id }}
 
   # ── chart (OCI → ghcr.io) ─────────────────────────────────────────────────
   # Runs after router and tei so that the chart pins the versions just released.

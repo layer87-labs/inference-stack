@@ -1,0 +1,89 @@
+# syntax=docker/dockerfile:1
+#
+# Containerfile.parakeet — Parakeet ASR HTTP server (CPU), model baked in
+#
+# OpenAI-compatible POST /v1/audio/transcriptions served by
+# deploy/parakeet/server.py on top of onnx-asr and ONNX Runtime (CPU). A fast
+# path for short recordings; Whisper stays the long-form backend.
+#
+# Model: NVIDIA Parakeet-TDT-0.6B-v3, int8 ONNX export by istupakov
+# (https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx), converted from
+# https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3.
+# License of the model: CC-BY-4.0 (attribution in /opt/model/NOTICE and in
+# the image description). The files are downloaded at a fixed commit and every
+# file is checked against its SHA-256; a moved or changed source fails the
+# build. Only ONNX and text files, no pickle. No download at runtime.
+# To update: pick a new commit, set PARAKEET_MODEL_REVISION and the SHA-256
+# values below (Hugging Face file page, "Git LFS Details", or sha256sum).
+#
+# Base: Chainguard wolfi-base (glibc) with Python 3.13 from the Wolfi
+# repository. The public cgr.dev/chainguard/python image only ships the
+# newest Python (3.15 at the time of writing), for which ONNX Runtime has no
+# wheels yet; wolfi-base lets the build pick the Python minor version.
+# BASE_IMAGE can point to a mirror of cgr.dev/chainguard.
+#
+# Hardened: non-root (uid 65532), no compilers or pip in the runtime image,
+# no network access needed at runtime.
+
+ARG BASE_IMAGE=cgr.dev/chainguard/wolfi-base:latest@sha256:6b818b54724b30d095379a7471d9a9b6428a51ff52be188676d1d6e5ea67a1e4
+ARG PYTHON=3.13
+
+FROM ${BASE_IMAGE} AS build
+ARG PYTHON
+
+ARG PARAKEET_MODEL_REPO=istupakov/parakeet-tdt-0.6b-v3-onnx
+ARG PARAKEET_MODEL_REVISION=8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce
+
+RUN apk add --no-cache python-${PYTHON} py${PYTHON}-pip
+COPY deploy/parakeet/requirements.txt /tmp/requirements.txt
+RUN python${PYTHON} -m venv /venv && \
+    /venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
+
+# Model files and their SHA-256 (int8 encoder and decoder; the NeMo
+# preprocessor ships inside onnx-asr).
+COPY <<'EOF' /tmp/model.sha256
+666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466  config.json
+eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70  decoder_joint-model.int8.onnx
+6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09  encoder-model.int8.onnx
+d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d  vocab.txt
+EOF
+
+RUN mkdir -p /opt/model && cd /opt/model && \
+    for f in $(awk '{print $2}' /tmp/model.sha256); do \
+      /venv/bin/python -c "import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" \
+        "https://huggingface.co/${PARAKEET_MODEL_REPO}/resolve/${PARAKEET_MODEL_REVISION}/${f}" "${f}" || exit 1; \
+    done && \
+    sha256sum -c /tmp/model.sha256
+
+COPY <<'EOF' /opt/model/NOTICE
+Parakeet-TDT-0.6B-v3 by NVIDIA (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
+ONNX export by istupakov (https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx).
+Licensed under CC-BY-4.0 (https://creativecommons.org/licenses/by/4.0/).
+Changes: none to the weights; int8-quantized ONNX files are redistributed as published.
+EOF
+
+FROM ${BASE_IMAGE}
+ARG PYTHON
+
+RUN apk add --no-cache python-${PYTHON} && \
+    adduser -D -u 65532 -s /sbin/nologin nonroot 2>/dev/null || true
+
+COPY --from=build /venv /venv
+COPY --from=build /opt/model /opt/model
+COPY deploy/parakeet/server.py /app/server.py
+
+ENV PATH=/venv/bin:$PATH \
+    MODEL_PATH=/opt/model \
+    MODEL_NAME=parakeet-tdt-0.6b-v3 \
+    PORT=9000
+
+WORKDIR /app
+USER 65532
+EXPOSE 9000
+
+ENTRYPOINT ["/venv/bin/python", "/app/server.py"]
+
+LABEL org.opencontainers.image.source="https://github.com/layer87-labs/inference-stack"
+LABEL org.opencontainers.image.description="Parakeet ASR HTTP server (CPU, ONNX Runtime) — OpenAI-compatible /v1/audio/transcriptions. Model: NVIDIA Parakeet-TDT-0.6B-v3 (int8 ONNX export by istupakov), CC-BY-4.0"
+LABEL org.opencontainers.image.licenses="Apache-2.0 AND CC-BY-4.0"

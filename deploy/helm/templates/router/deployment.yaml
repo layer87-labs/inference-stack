@@ -71,6 +71,12 @@ spec:
         - name: WHISPER_URL
           value: "http://{{ include "inference-stack.fullname" . }}-whisper:{{ .Values.whisper.service.port }}"
         {{- end }}
+        - name: PARAKEET_ENABLED
+          value: {{ .Values.parakeet.enabled | quote }}
+        {{- if .Values.parakeet.enabled }}
+        - name: PARAKEET_URL
+          value: "http://{{ include "inference-stack.fullname" . }}-parakeet:{{ .Values.parakeet.service.port }}"
+        {{- end }}
         {{- with .Values.router.extraEnv }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

@@ -43,6 +43,10 @@ type Config struct {
 	Embedding Backend
 	Reranker  Backend
 	Whisper   Backend
+	// Parakeet is a second transcription backend for short audio. It shares
+	// /v1/audio/transcriptions with Whisper; the router sends a request
+	// there only when its "model" field names one of Parakeet's models.
+	Parakeet Backend
 
 	// Observability
 	LogLevel  string
@@ -96,6 +100,17 @@ func Load() (*Config, error) {
 			// a much lower concurrency bound is appropriate.
 			MaxConcurrent: envInt("WHISPER_MAX_CONCURRENT", 8),
 		},
+		Parakeet: Backend{
+			Name:    "parakeet",
+			BaseURL: env("PARAKEET_URL", ""),
+			Models:  []string{"parakeet-tdt-0.6b-v3"},
+			Enabled: envBool("PARAKEET_ENABLED", false),
+			// Short dictation: a 60 s clip takes a few seconds on 2 CPUs.
+			Timeout: envDuration("PARAKEET_TIMEOUT", 60*time.Second),
+			// The server itself runs 1-2 at a time and queues a few more
+			// (429 beyond that); this bound only stops a pile-up in the router.
+			MaxConcurrent: envInt("PARAKEET_MAX_CONCURRENT", 6),
+		},
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -115,6 +130,9 @@ func (c *Config) validate() error {
 	if c.Whisper.Enabled && c.Whisper.BaseURL == "" {
 		return fmt.Errorf("WHISPER_ENABLED=true but WHISPER_URL is not set")
 	}
+	if c.Parakeet.Enabled && c.Parakeet.BaseURL == "" {
+		return fmt.Errorf("PARAKEET_ENABLED=true but PARAKEET_URL is not set")
+	}
 
 	enabled := 0
 	for _, b := range c.ActiveBackends() {
@@ -123,7 +141,7 @@ func (c *Config) validate() error {
 		}
 	}
 	if enabled == 0 {
-		return fmt.Errorf("no backends enabled: set at least one of EMBEDDING_ENABLED, RERANKER_ENABLED, WHISPER_ENABLED")
+		return fmt.Errorf("no backends enabled: set at least one of EMBEDDING_ENABLED, RERANKER_ENABLED, WHISPER_ENABLED, PARAKEET_ENABLED")
 	}
 
 	return nil
@@ -131,7 +149,7 @@ func (c *Config) validate() error {
 
 // ActiveBackends returns all configured backends (enabled or not).
 func (c *Config) ActiveBackends() []Backend {
-	backends := []Backend{c.Embedding, c.Reranker, c.Whisper}
+	backends := []Backend{c.Embedding, c.Reranker, c.Whisper, c.Parakeet}
 	backends = append(backends, c.ExtraBackends...)
 	return backends
 }
